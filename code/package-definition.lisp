@@ -22,5 +22,9 @@
    predications-newly-in-state
    state-name
    action-taken
+   smash
+   make-name
+   end-of-state-chain
+   arguments
    )      
   (:use start joshua common-lisp))

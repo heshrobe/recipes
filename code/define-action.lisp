@@ -208,7 +208,7 @@
           (bindings-for-prereqs bindings)
           (bindings-for-post-conditions bindings)
           (bindings-for-typing bindings)
-          (raw-prerequisites prerequisites)
+          (raw-prerequisites (loop for prereq in prerequisites collect (if (predication-maker-p prereq) prereq `',prereq)))
           (raw-post-conditions post-conditions)
           (raw-inputs (mapcar #'lv-thing-name inputs))
           (raw-outputs (loop for (name) in outputs collect (lv-thing-name name)))
@@ -453,30 +453,35 @@
 ;;; Note: This assumes that all prerequisites are stateful
 (defun check-one-prerequisite (action-name action prerequisite input-state)
   (declare (ignore action-name))
-  (let* ((found-it nil)
-         (prerequisite-is-negated (typep prerequisite 'ji::not-model))
-         (prerequisite-is-non-stateful (typep prerequisite 'non-stateful-predicate-model))
-         (thing-to-be-told (cond
-                            (prerequisite-is-non-stateful prerequisite)
-                            (prerequisite-is-negated `[not [in-state ,(second (predication-statement prerequisite)) ,input-state]])
-                            (t `[in-state ,prerequisite ,input-state])))
+  (etypecase prerequisite
+    (predication
+     (let* ((found-it nil)
+            (prerequisite-is-negated (typep prerequisite 'ji::not-model))
+            (prerequisite-is-non-stateful (typep prerequisite 'non-stateful-predicate-model))
+            (thing-to-be-told (cond
+                               (prerequisite-is-non-stateful prerequisite)
+                               (prerequisite-is-negated `[not [in-state ,(second (predication-statement prerequisite)) ,input-state]])
+                               (t `[in-state ,prerequisite ,input-state])))
         ;;; I could probably do this with forward rules, but the TMS hacking is more direct and less overhead
-         (stateful-pred (tell thing-to-be-told :justification :none))
-         (satisfied-pred (tell `[prerequisite-satisfied ,action ,prerequisite ,input-state]
-                               :justification `(there-means-satisfied (,stateful-pred))))
-         (missing-pred (tell `[prerequisite-missing ,action ,prerequisite ,input-state]
-                             :justification `(not-there-means-missing () (,stateful-pred)))))
-    ;; because of he way inheritance works across states, we need to make this check first
-    ;; I.e. just the TMS'ing hack won't work without this
-    (ask* (if prerequisite-is-negated `[not ,stateful-pred] stateful-pred)
-          (setq found-it t))
-    (unless found-it
-      ;; This will automatically retract the assumption if it leads to a contradiction
-      ;; We need to wrap any step that might cause a contradition, like when we try
-      ;; to achieve a missing prerequisite
-      (with-automatic-unjustification
-          (assume `[not ,stateful-pred])))
-    (values t satisfied-pred missing-pred)))
+            (stateful-pred (tell thing-to-be-told :justification :none))
+            (satisfied-pred (tell `[prerequisite-satisfied ,action ,prerequisite ,input-state]
+                                  :justification `(there-means-satisfied (,stateful-pred))))
+            (missing-pred (tell `[prerequisite-missing ,action ,prerequisite ,input-state]
+                                :justification `(not-there-means-missing () (,stateful-pred)))))
+       ;; because of he way inheritance works across states, we need to make this check first
+       ;; I.e. just the TMS'ing hack won't work without this
+       (ask* (if prerequisite-is-negated `[not ,stateful-pred] stateful-pred)
+             (setq found-it t))
+       (unless found-it
+         ;; This will automatically retract the assumption if it leads to a contradiction
+         ;; We need to wrap any step that might cause a contradition, like when we try
+         ;; to achieve a missing prerequisite
+         (with-automatic-unjustification
+             (assume `[not ,stateful-pred])))
+       (values t satisfied-pred missing-pred)))
+    (boolean (when prerequisite
+               (values t nil nil)))
+    ))
 
 ;;; A convenience function for scripting.  Just invokes the method
 ;;; which in turn invokes the function above.
@@ -647,7 +652,7 @@
   ;; Link input state to previous output-state with null action
   ;; this will cause predication inheritance from previous states
   (link-state previous-output-state input-state)
-  (let ((action (make-instance 'action :name action-name :role-name action-name :arguments arguments)))
+  (let ((action (make-instance 'action :name action-name :role-name (make-name action-name) :arguments arguments)))
     (check-prerequisites action input-state)
     ;; Note that achieve-missing-prerequisite checks that the prereq is still missing
     ;; it might have been achieved serendipitously by achieving another prereq

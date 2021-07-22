@@ -43,6 +43,12 @@
 (defmethod print-object ((thing state) stream)
   (format stream "#<state ~a>" (state-name thing)))
 
+(defmethod end-of-state-chain ((state state))
+  (loop for this-state = state then next-state
+      for next-state = (first (successors this-state))
+      when (null next-state)
+      return (values this-state)))
+
 (defparameter *initial-state* nil)
 (defparameter *state-ht* (make-hash-table))
 
@@ -461,11 +467,14 @@
   (destructuring-bind (pred . triggers) (predication-maker-statement if-part)
     (unless (eql pred 'and) (error "Must have and for trigger"))
     (loop for trigger in triggers
-        for trigger-pred = (predication-maker-predicate trigger)
+        for trigger-is-pred = (predication-maker-p trigger)
+        for trigger-pred = (when trigger-is-pred (predication-maker-predicate trigger))
         for trigger-is-negated = (eql trigger-pred 'not)
-        for real-trigger-pred = (if trigger-is-negated (predication-maker-predicate (second (predication-maker-statement trigger)))
-                                  trigger-pred)
-        for is-non-stateful = (subtypep real-trigger-pred 'non-stateful-predicate-model)
+        for real-trigger-pred = (cond
+                                 ((not trigger-is-pred) trigger)
+                                 (trigger-is-negated (predication-maker-predicate (second (predication-maker-statement trigger))))
+                                 (t trigger-pred))
+        for is-non-stateful = (or (not trigger-is-pred ) (subtypep real-trigger-pred 'non-stateful-predicate-model))
 	for state-variable = `(logic-variable-maker ,(gentemp "?STATE-"))
 	for real-trigger = (cond (is-non-stateful trigger)
                                  ((and (not is-non-stateful) trigger-is-negated)
@@ -476,10 +485,12 @@
         when (not is-non-stateful)
 	collect state-variable into state-variables
 	finally ;; (break "~a ~a" real-triggers state-variables)
-	  (let* ((final-state-variable `(logic-variable-maker ,(gentemp "?FINAL-STATE-")))
+	  (let* ((final-state-variable `(logic-variable-maker ,(intern "?FINAL-STATE")))
 		 (consistent-state-trigger `(predication-maker '(consistent-state ,final-state-variable ,@state-variables)))
 		 (real-if-part `(predication-maker '(and ,@(append real-triggers (list consistent-state-trigger)))))
-		 (real-then-part `(predication-maker '(in-state ,then-part ,final-state-variable))))
+		 (real-then-part (if (predication-maker-p then-part)
+                                     `(predication-maker '(in-state ,then-part ,final-state-variable))
+                                   then-part)))
 	    (return `(defrule ,name (:forward) if ,real-if-part then ,real-then-part))))))
 
 (defmethod mark-state-useful ((state state))
@@ -563,9 +574,121 @@
       (ask `[not [in-state ? ,state]] #'(lambda (just) (grabber just 'false)))
       (append true-answers
               (mapcar #'(lambda (thing) `[not ,thing]) false-answers)))))
+
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;; Rule Triggers for stateful slot-value predications
+;;;
+;;; Basic idea is to have the inner predication locate the normal trigger location;
+;;; and then use that to map into a hash-table to get the stateful triggers
+;;;
+;;; we can't put these triggers into the inner statement's trigger location because
+;;; the inner predications would find them and try to match against them but they would 
+;;; trap in trying to do so.
+;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+(defclass stateful-slot-value-trigger-holder (ji:trigger-holding-mixin)
+  ())
+
+;;; A mapping between prototype slots and a data structure that holds rule triggers
+;;; Need to do the same for backward rules and questions in principle.
+(defparameter *stateful-slot-value-trigger-mapping-table* (make-hash-table))
+
+(define-predicate-method (locate-forward-rule-trigger stateful-predicate-mixin) (truth-value continuation context rule-name)
+  (with-statement-destructured (inner-pred state) self
+    (declare (ignore state))
+    (if (typep inner-pred 'slot-value-mixin)
+        (let ((canonical-node-to-return nil))
+          (flet ((my-continuation (inner-structure)
+                   (let ((entry (gethash inner-structure *stateful-slot-value-trigger-mapping-table*)))
+                     (unless entry
+                       (setq entry (make-instance 'stateful-slot-value-trigger-holder))
+                       (setf (gethash inner-structure *stateful-slot-value-trigger-mapping-table*) entry))
+                     (multiple-value-bind (new-triggers something-changed the-canonical-node)
+                         (funcall continuation (ji:slot-forward-triggers entry))
+                       ;; (format t "~&Something changed? ~s canonical ~s" something-changed the-canonical-node)
+                       (when something-changed
+                         (setf (ji:slot-forward-triggers entry) new-triggers))
+                       (setq canonical-node-to-return the-canonical-node)))))
+            (ji:locate-prototype-slot inner-pred truth-value #'my-continuation context rule-name))
+          canonical-node-to-return)
+      (call-next-method))))
+
+;;; need corresponding map-over-forward-rule-triggers.
+
+(define-predicate-method (map-over-forward-rule-triggers stateful-predicate-mixin) (continuation)
+  (with-statement-destructured (inner-pred state) self
+    (declare (ignore state))
+    (if (typep inner-pred 'slot-value-mixin)
+        (let* ((prototype-slot (ji:slot-prototype-slot (ji:predication-my-slot inner-pred)))
+               (trigger-structure (gethash prototype-slot *stateful-slot-value-trigger-mapping-table*)))
+          (loop for trigger in (ji:slot-forward-triggers trigger-structure)
+              do (funcall continuation trigger)))
+      (call-next-method))))
+
+;;; and prefetch (this seems to work)
+(define-predicate-method (prefetch-forward-rule-matches stateful-predicate-mixin) (context continuation)
+  (with-statement-destructured (inner-pred state) self
+    (if (typep inner-pred 'slot-value-mixin)
+        (with-statement-destructured (path value) inner-pred
+          (let ((type-name (ji:find-object-type-in-trigger-pattern inner-pred (car path) context)))
+            (ji:map-over-subtypes (ji:object-type-named type-name)
+             #'(lambda (type)
+                 (loop for object in (ji:object-type-instances type)
+                       unless (ji:basic-object-typical-instance-of-type? (ji:ultimate-superpart object))
+                       do (let ((final-slot (ji:follow-path-to-slot (cons object (cdr path)))))
+                            (with-unification
+                             (unify (car path) object)
+                             (loop for (his-value . predication) in  (ji:slot-all-predications final-slot)
+                                 do (unify his-value value)
+                                    (ask-data `[in-state ,predication ,state] (predication-truth-value self)
+                                              #'(lambda (derivation)
+                                                  (funcall continuation (ask-database-predication derivation))))))))))))
+      (call-next-method))))
+
+;;; need to generate the matcher
+
+
+(define-predicate-method (write-forward-rule-semi-matcher stateful-predicate-mixin) (outer-predication env)
+  (with-predication-maker-destructured (my-inner my-state) self
+    (let ((inner-type (predication-maker-predicate my-inner)))
+      (if (subtypep inner-type 'ji::slot-value-mixin)
+          `(let* ((predication-statement (rest (predication-statement ,outer-predication)))
+                  (inner-pred (pop predication-statement))
+                  (his-state (pop predication-statement)))
+             (and ,(write-forward-rule-semi-matcher my-inner 'inner-pred env)
+                  ,(cond ((logic-variable-maker-p my-state)
+                          `(progn (setq ,(logic-variable-maker-name my-state) his-state)
+                                  t))
+                         (t `(eql ,my-state his-state)))))
+        (call-next-method)))))
+
+
+;;; presumably this should include all the above machinery for backward rules (and backward-questions) but
+;;; I doubt that they're ever going to be used.
+
 
 #|
+
+(define-recipe-object-type abc 
+    :slots ((bar)))
+
+(clear)
+(undefrule 'foo)
+
+(make-object 'abc :name 'abc-1)
+
+(define-fwrd-stateful-rule foo
+    if [and [object-type-of ?x abc] 
+            [value-of (?x bar) ?y]
+            ]
+    then (format t "Rule foo won ~a ~a" ?x ?y))
+
+(tell [in-state [value-of (abc-1 bar) 2] initial])
+
 
 (define-fwrd-stateful-rule mumble
     if [and [foo 1 2 3]

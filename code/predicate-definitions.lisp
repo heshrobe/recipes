@@ -9,6 +9,9 @@
 
 (define-recipe-predicate value-of (path variable) (ji::slot-value-mixin))
 
+;;; This is only used in fward-stateful-rule patterns to indicate that the value-of isn't stateful.
+(define-recipe-predicate value-of-ns (path variable) (non-stateful-predicate-model ji::slot-value-mixin))
+
 (define-recipe-predicate object-type-of (thing type) (non-stateful-predicate-model type-of-mixin))
 
 
