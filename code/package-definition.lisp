@@ -3,13 +3,14 @@
 (in-package :cl-user)
 
 (defpackage recipes
-  (:shadow value-of object-type-of)
+  ;; we need to shadow time because Gary has an ontology entry for time
+  (:shadow value-of object-type-of time)
   ;; (:shadowing-import-from )
   (:import-from ltms "ASSUME")
   (:export
    intern-state initial *initial-state* clear-all-states
-   define-action do-action in-state 
-   recipe-object 
+   define-action do-action in-state
+   recipe-object
    define-recipe-object-type define-recipe-predicate
    value-of intern-object
    action-sequence display-action-sequence state-trace
@@ -26,5 +27,5 @@
    make-name
    end-of-state-chain
    arguments
-   )      
+   )
   (:use start joshua common-lisp))
