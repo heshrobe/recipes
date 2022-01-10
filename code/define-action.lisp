@@ -54,6 +54,17 @@
 	      (t `(predication-maker '(in-state ,assertion ,input-state))))))
     (loop for thing in assertions collect (do-one thing))))
 
+(defun find-prereqs-that-mention-outputs (prereqs output-forms)
+  (let ((output-prereqs nil)
+        (real-prereqs nil)
+        (output-lvs nil))
+    (loop for (lv nil nil) in output-forms
+        do (pushnew lv output-lvs :test #'eql :key #'ji::logic-variable-maker-name))
+    (loop for prereq in prereqs
+        if (lvs-occurs-in output-lvs prereq)
+        do (push prereq output-prereqs)
+        else do (push prereq real-prereqs))
+    (values real-prereqs output-prereqs)))
 
 (defun process-guards (assertions input-state) (process-assertions assertions input-state))
 
@@ -110,11 +121,14 @@
 	    (subtypep predicate 'ji::named-part-of-mixin)))))
     nil))
 
-(defun process-typing (forms)
-  (loop for form in forms
-      if (and (listp form) (= (length form) 2))
-      collect `(predication-maker '(object-type-of ,@form))
-      else collect form))
+(defparameter *typing-predicate* 'instance-of)
+
+(defun process-typing (forms input-state)
+  (let ((raw-typing-forms (loop for form in forms
+                              if (and (listp form) (= (length form) 2))
+                              collect `(predication-maker '(,*typing-predicate* ,@form))
+                              else collect form)))
+    (process-assertions raw-typing-forms input-state)))
 
 
 
@@ -168,14 +182,32 @@
   (link-state prior-state next-state)
   action)
 
-(defun process-new-outputs (variable-list action-variable)
-  (loop for (lv form name) in variable-list
-      when (symbolp form)
-      collect `(unify ,lv (make-object ',form :name (make-name ',form)))
-      else collect `(unify ,lv ,form)
-      collect `(let ((the-output (joshua-logic-variable-value ,lv))
-                     (the-action (joshua-logic-variable-value ,action-variable)))
-                 (push (list ',name the-output) (outputs the-action)))))
+(defun pure-name-of-logic-variable-maker (lv-maker)
+  (let* ((name (ji::logic-variable-maker-name lv-maker))
+         (package (symbol-package name)))
+    (intern (subseq (string name) 1) package)))
+
+(defun process-new-outputs (variable-list action-variable output-state-variable)
+  (let ((done-lvs nil))
+    (loop for (lv form name) in variable-list
+        for real-name = (if (null form) (pure-name-of-logic-variable-maker lv) name)
+        unless (member lv done-lvs :test #'equal)
+        collect (cond
+                 ((null form) `(unify ,lv ',(pure-name-of-logic-variable-maker lv)))
+                 ((symbolp form) `(unify ,lv (make-object ',form :name (make-name ',form))))
+                 (t `(unify ,lv ,form)))
+        and collect `(let ((the-output (joshua-logic-variable-value ,lv))
+                           (the-action (joshua-logic-variable-value ,action-variable)))
+                       ,@(when (and (listp form) (null 'type))
+                           (list `(tell [in-state [instance-of ,lv ,name] ,output-state-variable])))
+                       ;; In the case where a new object is created
+                       ;; (as opposed to just a symbol which is what Gary's format gives me)
+                       ;; then the name and the object are a symbol and an object respectively
+                       ;; But in the case of Gary's format there's just a symbol
+                       ;; and these 2 are the same.  Nobody actually uses this as far as I can
+                       ;; tell
+                       (push (list ',real-name the-output) (outputs the-action)))
+        do (push lv done-lvs))))
 
 (defparameter *all-actions* nil)
 
@@ -184,6 +216,18 @@
    ((logic-variable-maker-p thing) (logic-variable-maker-name thing))
    ((unbound-logic-variable-p thing) (logic-variable-name thing))
    (t thing)))
+
+(defun lvs-occurs-in (lv-makers form)
+  (labels ((do-one (thing)
+             (cond
+              ((ji::logic-variable-maker-p thing)
+               (if (member thing lv-makers :test #'equal)
+                   (return-from lvs-occurs-in t)))
+              ((symbolp thing))
+              ((numberp thing))
+              (t (loop for sub-thing in thing
+                     do (do-one sub-thing))))))
+    (do-one form)))
 
 (defmacro define-action (name inputs &key bindings prerequisites post-conditions (define-predicate t) super-types outputs typing abstract)
   ;; capture what was typed in
@@ -212,7 +256,10 @@
           (raw-post-conditions post-conditions)
           (raw-inputs (mapcar #'lv-thing-name inputs))
           (raw-outputs (loop for (name) in outputs collect (lv-thing-name name)))
-          (raw-output-typing (loop for (name type) in outputs collect (list name type)))
+          (raw-output-typing (loop for (lv form type-for-null-form) in outputs
+                                 if (null form)
+                                 collect (list lv type-for-null-form)
+                                 else collect (list lv form)))
           (raw-typing typing))
     (multiple-value-setq (prerequisites post-conditions typing) (substitute-hidden-variables prerequisites post-conditions typing hidden-bindings-alist))
     (loop for (dotted-form lv) in (second (assoc 'prerequisites hidden-bindings-alist))
@@ -238,61 +285,64 @@
              (state-logic-variables (make-logic-variables '(input-state output-state)))
              (action-variable (first (make-logic-variables '(action)))))
         (destructuring-bind (input-state-variable output-state-variable) state-logic-variables
-          `(eval-when (:compile-toplevel :load-toplevel :execute)
-             (pushnew ',name *all-actions*)
-             ,(define-action-type-creator name
-                  :prerequisites raw-prerequisites
-                  :post-conditions raw-post-conditions
-                  :inputs raw-inputs
-                  :outputs raw-outputs
-                  :output-typing raw-output-typing
-                  :super-types super-types
-                  :typing raw-typing
-                  :source-inputs source-inputs
-                  :source-outputs source-outputs
-                  :source-typing source-typing
-                  :source-prerequisites source-prerequisites
-                  :source-post-conditions source-post-conditions
-                  :abstract abstract)
-             (let ((new-action-type (create-action-object ',name)))
-               (thread-action-type new-action-type))
-             ;; ,source
-             ,@(when define-predicate `((define-predicate ,name ,names (,@super-types ltms:ltms-predicate-model))))
-             ,(generate-prereq-checker name inputs
-                                       (append (process-bindings bindings-for-prereqs input-state-variable)
-                                               (process-bindings bindings-for-typing input-state-variable))
-                                       prerequisites
-                                       input-state-variable
-                                       typing)
-             ,@(unless abstract (generate-prereq-achievers name logic-variables post-conditions (process-typing typing)))
-             (defrule ,rule-name (:backward)
-               then [take-action ,name ?action ,@state-logic-variables]
-               if [and (let ((arguments (arguments ?action)))
-                         ;; unpack the arguments from the action object
-                         ,@(loop for lv in logic-variables
-                               collect `(unify ,lv (pop arguments)))
-                         t)
-                       ,@(process-bindings bindings-for-post-conditions input-state-variable)
-                       ,@(process-typing typing)
-                       ,@(process-prerequisites prerequisites input-state-variable)
-                       ;; so at this point we've checked that the prerequisites are satisfied
-                       (prog1 t
-                         (when (unbound-logic-variable-p ,output-state-variable)
-                           (unify ,output-state-variable
-                                  (intern-state (intern (string-upcase (gensym "state-"))) ,input-state-variable)))
-                         (let* ((action-taken-pred (tell [action-taken ?action ,input-state-variable ,output-state-variable]
-                                                         :justification :none))
-                                (justification (build-justification-from-backward-support ji::*backward-support*)))
-                           (destructuring-bind (nothing true-stuff false-stuff unknown-stuff) justification
-                             (declare (ignore nothing))
-                             (justify action-taken-pred +true+ ',jusification-mnemonic true-stuff false-stuff unknown-stuff))
-                           (unify ,action-variable (link-action ?action ,input-state-variable ,output-state-variable))
-                         ,@(process-new-outputs outputs action-variable)
-                           ,@(let* ((mnemonic (intern (string-upcase (format nil "action-taken-~A" name))))
-                                    (justification-2 `(list ',mnemonic (list action-taken-pred))))
-                               (process-post-conditions post-conditions output-state-variable justification-2))
-                           ))
-                       ]))))))))
+          (multiple-value-bind (real-prereqs output-prereqs) (find-prereqs-that-mention-outputs prerequisites outputs)
+            `(eval-when (:compile-toplevel :load-toplevel :execute)
+               (pushnew ',name *all-actions*)
+               ,(define-action-type-creator name
+                    :prerequisites raw-prerequisites
+                    :post-conditions raw-post-conditions
+                    :inputs raw-inputs
+                    :outputs raw-outputs
+                    :output-typing raw-output-typing
+                    :super-types super-types
+                    :typing raw-typing
+                    :source-inputs source-inputs
+                    :source-outputs source-outputs
+                    :source-typing source-typing
+                    :source-prerequisites source-prerequisites
+                    :source-post-conditions source-post-conditions
+                    :abstract abstract)
+               (let ((new-action-type (create-action-object ',name)))
+                 (thread-action-type new-action-type))
+               ;; ,source
+               ,@(when define-predicate `((define-predicate ,name ,names (,@super-types ltms:ltms-predicate-model))))
+               ,(generate-prereq-checker name inputs
+                                         (append (process-bindings bindings-for-prereqs input-state-variable)
+                                                 (process-bindings bindings-for-typing input-state-variable))
+                                         real-prereqs
+                                         input-state-variable
+                                         typing)
+               ,@(unless abstract (generate-prereq-achievers name logic-variables post-conditions (process-typing typing input-state-variable)))
+               (defrule ,rule-name (:backward)
+                 then [take-action ,name ?action ,@state-logic-variables]
+                 if [and (let ((arguments (arguments ?action)))
+                           ;; unpack the arguments from the action object
+                           ,@(loop for lv in logic-variables
+                                 collect `(unify ,lv (pop arguments)))
+                           t)
+                         ,@(process-bindings bindings-for-post-conditions input-state-variable)
+                         ,@(process-typing typing input-state-variable)
+                         ,@(process-prerequisites real-prereqs input-state-variable)
+                         ;; so at this point we've checked that the prerequisites are satisfied
+                         (prog1 t
+                           (when (unbound-logic-variable-p ,output-state-variable)
+                             (unify ,output-state-variable
+                                    (intern-state (intern (string-upcase (gensym "state-"))) ,input-state-variable)))
+                           (let* ((action-taken-pred (tell [action-taken ?action ,input-state-variable ,output-state-variable]
+                                                           :justification :none))
+                                  (justification (build-justification-from-backward-support ji::*backward-support*)))
+                             (destructuring-bind (nothing true-stuff false-stuff unknown-stuff) justification
+                               (declare (ignore nothing))
+                               (justify action-taken-pred +true+ ',jusification-mnemonic true-stuff false-stuff unknown-stuff))
+                             (unify ,action-variable (link-action ?action ,input-state-variable ,output-state-variable))
+                             ,@(process-new-outputs outputs action-variable output-state-variable)
+                             ,@(let* ((mnemonic (intern (string-upcase (format nil "action-taken-~A" name))))
+                                      (justification-2 `(list ',mnemonic (list action-taken-pred))))
+                                 (process-post-conditions post-conditions output-state-variable justification-2))
+                             ,@(process-post-conditions output-prereqs input-state-variable)))
+                         ]))
+            )))))))
+
 
 
 
@@ -443,7 +493,7 @@
                      collect `(unify ,lv (pop arguments)))
                t)
                ,@bindings
-             ,@(process-typing typing)
+             ,@(process-typing typing input-state-logic-variable)
              ,@(loop for raw-prereq in prerequisites
                    collect `(check-one-prerequisite ',action-name ?action ,raw-prereq ,input-state-logic-variable))]))
 
@@ -901,7 +951,7 @@
          if [and
 	     ,@(process-bindings bindings input-state)
 	     ,@(process-guards guards input-state)
-	     ,@(process-typing typing)
+	     ,@(process-typing typing input-state)
 	     ,@(process-prerequisites prerequisites input-state)
 	     ,@stuff
 	     ,@(process-post-conditions post-conditions output-state)

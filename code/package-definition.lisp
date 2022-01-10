@@ -4,7 +4,8 @@
 
 (defpackage recipes
   ;; we need to shadow time because Gary has an ontology entry for time
-  (:shadow value-of object-type-of time)
+  ;; also need to shadow the predicates that are in used in the Joshua object model
+  (:shadow part-of named-part-of value-of object-type-of time)
   ;; (:shadowing-import-from )
   (:import-from ltms "ASSUME")
   (:export

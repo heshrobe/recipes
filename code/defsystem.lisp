@@ -1,4 +1,4 @@
-;;; -*- Syntax: Ansi-common-lisp; Package: cl-USER; Base: 10; Mode: LISP -*- 
+;;; -*- Syntax: Ansi-common-lisp; Package: cl-USER; Base: 10; Mode: LISP -*-
 
 (in-package :cl-user)
 
@@ -12,10 +12,10 @@
          (home-dir (pathname-directory loading-file))
          (wild-dir (append (butlast home-dir) (list :wild-inferiors))))
     (setq *recipes-home-directory* (make-pathname :directory (butlast home-dir)
-                                                :host host 
+                                                :host host
                                                 :device device)
           *recipes-wild-directory* (make-pathname :directory wild-dir
-                                                :host host 
+                                                :host host
                                                 :device device
                                                 :type :wild
                                                 :name :wild
@@ -37,21 +37,21 @@
   )
 
 #+allegro
-(defsystem recipes-core 
+(defsystem recipes-core
     (:default-pathname "recipes:code;"
         :default-module-class separate-destination-module)
   (:serial
    ("package-definition")
-   ("basic-definitions" (:module-class separate-destination-joshua-module)) 
-   ("stateful-predicates" (:module-class separate-destination-joshua-module)) 
-   ("define-action" (:module-class separate-destination-joshua-module))
+   ("basic-definitions" (:module-class separate-destination-joshua-module))
+   ("stateful-predicates" (:module-class separate-destination-joshua-module))
    ("predicate-definitions" (:module-class separate-destination-joshua-module))
+   ("define-action" (:module-class separate-destination-joshua-module))
    ("define-object" (:module-class separate-destination-joshua-module))
    ))
 
 
 #+allegro
-(defsystem recipes 
+(defsystem recipes
     (:default-pathname "recipes:code;"
 	:default-module-class separate-destination-module)
   (:serial
