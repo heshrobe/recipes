@@ -45,12 +45,12 @@
   :pathname "."
   :components
   ((:file "package-definition")
-     (:joshua-file "basic-definitions" :depends-on ("package-definition"))
-     (:joshua-file "stateful-predicates" :depends-on ("basic-definitions")) 
-     (:joshua-file "define-action" :depends-on ("stateful-predicates"))
-     (:joshua-file "predicate-definitions" :depends-on ("define-action"))
-     (:joshua-file "define-object" :depends-on ("predicate-definitions"))
-     ))
+   (:joshua-file "basic-definitions" :depends-on ("package-definition"))
+   (:joshua-file "stateful-predicates" :depends-on ("basic-definitions")) 
+   (:joshua-file "predicate-definitions" :depends-on ("stateful-predicates"))
+   (:joshua-file "define-action" :depends-on ("predicate-definitions"))
+   (:joshua-file "define-object" :depends-on ("define-action"))
+   ))
 
 
 #+asdf
