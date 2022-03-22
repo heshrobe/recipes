@@ -43,14 +43,14 @@
   :description "Recipe Follower Functionality"
   :maintainer "Howie Shrobe"
   :pathname "."
-  :components
-  ((:file "package-definition")
-   (:joshua-file "basic-definitions" :depends-on ("package-definition"))
-   (:joshua-file "stateful-predicates" :depends-on ("basic-definitions")) 
-   (:joshua-file "predicate-definitions" :depends-on ("stateful-predicates"))
-   (:joshua-file "define-action" :depends-on ("predicate-definitions"))
-   (:joshua-file "define-object" :depends-on ("define-action"))
-   ))
+  :serial t
+  :components ((:file "package-definition")
+               (:joshua-file "basic-definitions" )
+               (:joshua-file "stateful-predicates") 
+               (:joshua-file "predicate-definitions")
+               (:joshua-file "define-action" )
+               (:joshua-file "define-object" )
+               ))
 
 
 #+asdf
@@ -60,9 +60,9 @@
   :maintainer "Howie Shrobe"
   :pathname "."
   :depends-on (recipes/core)
-  :components
-  ((:joshua-file "object-definitions")
-   (:joshua-file "actions" :depends-on (object-definitions))
-   (:joshua-file "output-dumper" :depends-on ("actions"))
-   (:joshua-file "parse-recipe" :depends-on ("output-dumper"))
-   ))
+  :serial t
+  :components ((:joshua-file "object-definitions")
+               (:joshua-file "actions" :depends-on (object-definitions))
+               (:joshua-file "output-dumper" :depends-on ("actions"))
+               (:joshua-file "parse-recipe" :depends-on ("output-dumper"))
+               ))

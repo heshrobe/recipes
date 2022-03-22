@@ -2,9 +2,9 @@
 
 (in-package :recipes)
 
-;;; Notes: The interaction with negation makes this tricky.  
+;;; Notes: The interaction with negation makes this tricky.
 ;;; Initially I thought you'd just like to have the predication
-;;; without explicity mention of context and hide the context in a 
+;;; without explicity mention of context and hide the context in a
 ;;; slot.  But then you'd have to deal with truth-values differently
 ;;; since something can be true in one context and false in another
 ;;; and therefore the +true+, +false+ predication bits can't be used
@@ -76,9 +76,9 @@
        (when (null state)
 	 (setq state (make-instance 'state :state-name state-identifier))
 	 (setf (gethash state-identifier *state-ht*) state)
-	 (if prior-state-supplied-p 
+	 (if prior-state-supplied-p
 	     (when (and (symbolp prior-state) (not (null prior-state)))
-	       ;; if prior state is explictly NIL we don't want to intern 
+	       ;; if prior state is explictly NIL we don't want to intern
 	       ;; a state name NIL
 	       (setq prior-state (intern-state prior-state)))
 	   (setq prior-state *initial-state*))
@@ -120,7 +120,7 @@
 ;;; Puts a new state between two existing states
 ;;; The new state can have an action that takes you from it to the
 ;;; existing successor.
-;;; Extra credit: Update the nicknames 
+;;; Extra credit: Update the nicknames
 
 (defun link-state (predecessor successor)
   (setf (predecessor successor) predecessor
@@ -129,8 +129,8 @@
 
 (defun thread-state (existing-predecessor new-state existing-successor)
   (unless  (eql (predecessor existing-successor) existing-predecessor)
-    (error "Threading between non-adjacent states ~a ~a ~a" 
-           existing-predecessor existing-successor (predecessor existing-successor)))  
+    (error "Threading between non-adjacent states ~a ~a ~a"
+           existing-predecessor existing-successor (predecessor existing-successor)))
   (setf (predecessor new-state) (predecessor existing-successor)
         (successors new-state) (successors existing-predecessor))
   (let ((action (prior-action existing-successor)))
@@ -141,11 +141,11 @@
   (setf (successors existing-predecessor) (list new-state)
         (predecessor existing-successor) new-state))
 
-;;; This is called when an attempt to achieve a prerequisite for 
+;;; This is called when an attempt to achieve a prerequisite for
 ;;; a contemplated action fails.
 ;;; Take the original predecessor and sucessor states
 ;;; Kills all the states between and restores the action as the link
-;;; between them.  
+;;; between them.
 ;;; Removes all action taken assertions mentioning the intermediate states
 
 (defun unthread-state (predecessor successor)
@@ -162,12 +162,12 @@
             (predecessor successor) predecessor)
       ;; remove any action taken assertions that link
       ;; to or from intermediate-states
-      (ask `[action-taken ?predecessor ?successor] 
+      (ask `[action-taken ?predecessor ?successor]
            #'(lambda (just)
                (when (or (member ?predecessor intermediate-states)
                          (member ?successor intermediate-states))
                  (untell (ask-database-predication just))))))))
-        
+
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -208,12 +208,12 @@
       (call-next-method `[,(predication-predicate self) ,internal-pred ,(intern-state state)] truth-value justification))))
 
 (define-predicate-method (insert stateful-predicate-mixin) ()
-  (with-statement-destructured (internal-pred state) self    
+  (with-statement-destructured (internal-pred state) self
     (let* ((canonical-state (intern-state state))
 	   (canonicalized-internal-pred (insert internal-pred))
 	   (canonicalized-pred `[,(predication-predicate self) ,canonicalized-internal-pred ,canonical-state])
 	   (truth-map (gethash canonicalized-internal-pred *truth-value-ht*)))
-      (unless truth-map 
+      (unless truth-map
 	(setq truth-map (make-instance 'state-truth-map))
 	(setf (gethash canonicalized-internal-pred *truth-value-ht*) truth-map))
       (let ((internal-pred-entry (gethash canonicalized-internal-pred *state-predicate-interning-ht*)))
@@ -226,10 +226,10 @@
 	   (t (setf (gethash canonical-state internal-pred-entry) canonicalized-pred)
 	      (values canonicalized-pred t))))))))
 
-;;; When something gets untold this will get called to remove 
+;;; When something gets untold this will get called to remove
 ;;; all indexing information.  Just the dual of the above
 (define-predicate-method (uninsert stateful-predicate-mixin :before) ()
-  (with-statement-destructured (internal-pred state) self    
+  (with-statement-destructured (internal-pred state) self
     (let* ((canonical-state (intern-state state))
            (canonicalized-internal-pred (insert internal-pred))
            (truth-map (gethash canonicalized-internal-pred *truth-value-ht*)))
@@ -265,7 +265,7 @@
 		 (funcall continuation just))
 		 ))
 	  (when (eql truth-value +false+) (setq truth-value (negate-truth-value truth-value)))
-	  (ji:ask-internal internal-pred  truth-value #'my-continuation 
+	  (ji:ask-internal internal-pred  truth-value #'my-continuation
 			   do-backward-rules do-questions))
       (call-next-method))))
 
@@ -278,7 +278,7 @@
       (labels
 	  ((succeed (interned-internal-pred database-predication)
              ;; state is here for future expansion where it could be a variable
-	     (with-unification 
+	     (with-unification
 	      (typecase interned-internal-pred
 		(slot-value-mixin
                  ;; this is necessary because slot-value-mixin interns
@@ -296,7 +296,7 @@
                      (unify his-value value))))
 		(named-component
 		 (typecase internal-pred
-		   (value-of 
+		   (value-of
 		    (with-statement-destructured (path value) internal-pred
 		      (declare (ignore path))
 		      (with-statement-destructured (parent name sub-object) interned-internal-pred
@@ -325,12 +325,15 @@
 		    (false-states (when truth-map (false-states truth-map)))
 		    (true-states (when truth-map (true-states truth-map)))
 		    (negated (eql truth-value +false+)))
-               ;; if the internal predication has never been told in a state 
+               ;; if the internal predication has never been told in a state
                ;; But has been asserted in bare form
                ;; then just check
                ;; if it has the right truth-value
 	       (cond
-		((null truth-map)
+		((or (null truth-map)
+                     ;; I don't know why but there might be a truth map but
+                     ;; it's empty
+                     (and (null (true-states truth-map)) (null (false-states truth-map))))
 		 (when (eql (predication-truth-value interned-internal-pred) truth-value)
 		   (with-unification
 		    (when (Unbound-logic-variable-p state-descriptor)
@@ -341,7 +344,7 @@
 		 (loop for winning-state in (if negated false-states true-states)
                      do (with-unification
                          (unify state-descriptor winning-state)
-                         (succeed interned-internal-pred 
+                         (succeed interned-internal-pred
                                   (gethash winning-state (gethash interned-internal-pred *state-predicate-interning-ht*))))))
 		(t
 		 (loop for this-state = (intern-state state-descriptor) then (predecessor this-state)
@@ -353,7 +356,7 @@
 				 (or  (and negated (eql (predication-truth-value interned-internal-pred) +false+))
 				      (and (not negated) (eql (predication-truth-value interned-internal-pred) +true+)))))
                         ;; should build a justification
-		     do (succeed interned-internal-pred 
+		     do (succeed interned-internal-pred
 				 (gethash this-state (gethash interned-internal-pred *state-predicate-interning-ht*)))
                         ;; if it doesn't hit in any state but does hit in the "base" environment
                         ;; and it has the right truth-value then succeed
@@ -396,7 +399,7 @@
   (depth (state-of-pred predication)))
 
 (defun consistent-state (state-set)
-  (cond 
+  (cond
    ((null (rest state-set)) (first state-set))
    (t
     (setq state-set (sort (copy-seq state-set) #'> :key #'depth))
@@ -415,7 +418,7 @@
 	   :query self
 	   :model (type-of self)))
   (with-predication-maker-destructured (final-variable &rest set) self
-    `(:procedure 
+    `(:procedure
       (let ((final-state (consistent-state (list ,@set))))
 	(when final-state
 	  (with-unification
@@ -437,7 +440,7 @@
 	      (loop for other-state in other-states
 		  thereis (unbound-logic-variable-p other-state)))
     (error 'ji::model-cant-handle-query
-	   :query self 
+	   :query self
 	   :model (type-of self)))
     (when (find-if #'unbound-logic-variable-p other-states)
       (error 'ji:model-cant-handle-query
@@ -455,7 +458,7 @@
 ;;; The trigger is non-stateful - just compile in the trigger
 ;;; The trigger is stateful and negate - compile in [not [in-state trigger state]]
 ;;; The trigger is stateful and not negated compile in [in-state trigger state]
-;;; We don't have to do anything about negated stateful then-parts because tell handles 
+;;; We don't have to do anything about negated stateful then-parts because tell handles
 ;;; that.  And we assume that the then-part is always stateful.
 ;;; Would be nice to allow :if and :then just as defrule does
 
@@ -514,7 +517,7 @@
   (ask `[action-taken ?action ?input-state ,state]
        #'(lambda (backward-support)
            (let ((predication (ask-database-predication backward-support)))
-             ;; kill all consequences which are the predications in 
+             ;; kill all consequences which are the predications in
              ;; the useless state
              (loop for consequence in (consequences predication)
                  do (untell consequence))
@@ -534,7 +537,7 @@
     (do-one *initial-state*)))
 
 (defun state-trace (final-state)
-  (nreverse 
+  (nreverse
     (loop for state = final-state then next-state
 	for next-state = (predecessor state)
 	collect state
@@ -558,6 +561,8 @@
       do (format stream "~%~a ~{~a~^, ~}" name args)))
 
 
+;;; This might screw up for a predication that was just asserted
+;;; without a state and were returned for the initial state.
 (defun predications-newly-in-state (state)
   (when (symbolp state) (setq state (intern-state state)))
   (let ((true-answers nil)
@@ -566,7 +571,7 @@
              (let ((database-pred (ask-database-predication just)))
                (with-statement-destructured (internal-pred retrieved-state) database-pred
                  (case truth
-                   (true (when (eql retrieved-state state) 
+                   (true (when (eql retrieved-state state)
                            (push internal-pred true-answers)))
                    (false (when (eql retrieved-state state)
                             (push internal-pred false-answers))))))))
@@ -584,7 +589,7 @@
 ;;; and then use that to map into a hash-table to get the stateful triggers
 ;;;
 ;;; we can't put these triggers into the inner statement's trigger location because
-;;; the inner predications would find them and try to match against them but they would 
+;;; the inner predications would find them and try to match against them but they would
 ;;; trap in trying to do so.
 ;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -625,8 +630,9 @@
     (if (typep inner-pred 'slot-value-mixin)
         (let* ((prototype-slot (ji:slot-prototype-slot (ji:predication-my-slot inner-pred)))
                (trigger-structure (gethash prototype-slot *stateful-slot-value-trigger-mapping-table*)))
-          (loop for trigger in (ji:slot-forward-triggers trigger-structure)
-              do (funcall continuation trigger)))
+          (when trigger-structure
+            (loop for trigger in (ji:slot-forward-triggers trigger-structure)
+                do (funcall continuation trigger))))
       (call-next-method))))
 
 ;;; and prefetch (this seems to work)
@@ -673,7 +679,7 @@
 
 #|
 
-(define-recipe-object-type abc 
+(define-recipe-object-type abc
     :slots ((bar)))
 
 (clear)
@@ -682,7 +688,7 @@
 (make-object 'abc :name 'abc-1)
 
 (define-fwrd-stateful-rule foo
-    if [and [object-type-of ?x abc] 
+    if [and [object-type-of ?x abc]
             [value-of (?x bar) ?y]
             ]
     then (format t "Rule foo won ~a ~a" ?x ?y))
@@ -695,8 +701,8 @@
 	    [foo 2 3 4]]
     then [foo 3 4 5])
 
-(defrule mumble (:forward) 
-  if [and [in-state [foo 1 2 3] ?state-1000] 
+(defrule mumble (:forward)
+  if [and [in-state [foo 1 2 3] ?state-1000]
 	  [in-state [foo 2 3 4] ?state-1001]
 	  [consistent-state ?final-state-1002 ?state-1000 ?state-1001]]
   then [in-state [foo 3 4 5] ?final-state-1002])
@@ -723,7 +729,7 @@ A test case for backward rules
 
 (ask [in-state [foo 1 3] state-2] #'print-query)
 
-This works but then goes into an infinite loop looking for other matches to [in-state [foo 1 ?b] state-2] which triggers 
+This works but then goes into an infinite loop looking for other matches to [in-state [foo 1 ?b] state-2] which triggers
 the same rule but not ?c is unbound.  This has nothing to do with "in-state" it's a classic case of transitivity rules
 not working in the backward direction for example:
 
@@ -750,5 +756,5 @@ also goes into infinite loop after finding the answer
 ;;; Forward Rules:
 ;;;  Outline (defrule xx (:forward) IF [and [in-state ... ?x] [in-state ...  ?x]] ...
 ;;;    turns into If [and [in-state ... ?x1] [in-state ... ?x2] (consistent-states ?x1 ?x2 pred-1 pred-2)
-;;;  Where consistent states gets the deepest state out of ?x1 ?x2 and then checks that for all the 
+;;;  Where consistent states gets the deepest state out of ?x1 ?x2 and then checks that for all the
 ;;;  embdeded preds they are have the desired truth-values in that deepest state.

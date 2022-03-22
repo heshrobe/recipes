@@ -20,16 +20,18 @@
                     [broken ?victim.shell]
                     [not [in ?victim.insides ?victim.shell]]
                     [value-of (?the-mixture constituent) ?victim.insides.whites]
-                    [value-of (?the-mixture constituent) ?victim.insides.yolk]  
+                    [value-of (?the-mixture constituent) ?victim.insides.yolk]
                     [not [holding ?actor ?victim]]
                     [handempty ?actor]
                     )
   :typing ((?actor cook)
            (?victim egg)
            (?receptacle receptacle))
-  :outputs ((?the-mixture set-of-liquids egg-contents))
+  ;; The third element in each form is the type if the
+  ;; second element is null
+  :outputs ((?the-mixture :type-for-creation set-of-liquids :name egg-contents))
   )
-             
+
 
 (define-action stir-liquids (?actor ?the-constituents ?receptacle ?utensil)
   :prerequisites ([in ?the-constituents ?receptacle]
@@ -41,7 +43,7 @@
   :post-conditions ([constituent-of ?the-eggs.yolk ?the-mixture]
                     [constituent-of ?the-eggs.whites ?the-mixture]
                     [in ?the-mixture ?receptacle]))
-  
+
 (define-action stir-eggs (?actor ?the-eggs ?receptacle ?utensil)
   :prerequisites ([in ?the-eggs ?receptacle]
                   [has ?actor ?receptacle]
@@ -110,6 +112,3 @@
                   [has ?actor ?object]
                   [holding ?actor ?held-thing])
   :post-conditions ([above ?held-thing ?object]))
-
-
-  

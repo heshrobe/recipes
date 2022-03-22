@@ -2,8 +2,8 @@
 
 (in-package :recipes)
 
-;;;(define-recipe-predicate named-component (superpart-object name subpart-object)
-;;;   (ji::named-part-of-mixin))
+(define-recipe-predicate named-component (superpart-object name subpart-object)
+   (ji::named-part-of-mixin))
 
 ;;; (define-recipe-predicate component (superpart-object subpart-object) (ji::part-of-mixin))
 

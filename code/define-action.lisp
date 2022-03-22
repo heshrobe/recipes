@@ -121,7 +121,9 @@
 	    (subtypep predicate 'ji::named-part-of-mixin)))))
     nil))
 
-(defparameter *typing-predicate* 'instance-of)
+;;; For ASIST this wants to be object-type-of
+;;; For interpreting Gary's stuff instance-of
+(defparameter *typing-predicate* 'object-type-of)
 
 (defun process-typing (forms input-state)
   (let ((raw-typing-forms (loop for form in forms
@@ -189,17 +191,24 @@
 
 (defun process-new-outputs (variable-list action-variable output-state-variable)
   (let ((done-lvs nil))
-    (loop for (lv form name) in variable-list
-        for real-name = (if (null form) (pure-name-of-logic-variable-maker lv) name)
+    (loop for (lv . plist) in variable-list
+        for type-for-creation = (getf plist :type-for-creation)
+        for form-for-creation = (getf plist :form-for-creation)
+        for additional-types = (getf plist :additional-types)
+        for name = (getf plist :name)
+        for real-name = (cond ((and (null name) type-for-creation) (make-name type-for-creation))
+                              ((not (null name)) name)
+                              (t (pure-name-of-logic-variable-maker lv)))
         unless (member lv done-lvs :test #'equal)
         collect (cond
-                 ((null form) `(unify ,lv ',(pure-name-of-logic-variable-maker lv)))
-                 ((symbolp form) `(unify ,lv (make-object ',form :name (make-name ',form))))
-                 (t `(unify ,lv ,form)))
+                 ((and (null form-for-creation) (null type-for-creation)) `(unify ,lv ',real-name))
+                 (type-for-creation `(unify ,lv (make-object ',type-for-creation :name ',real-name)))
+                 (form-for-creation `(unify ,lv ,form-for-creation)))
         and collect `(let ((the-output (joshua-logic-variable-value ,lv))
                            (the-action (joshua-logic-variable-value ,action-variable)))
-                       ,@(when (and (listp form) (null 'type))
-                           (list `(tell [in-state [instance-of ,lv ,name] ,output-state-variable])))
+                       ,@(when additional-types
+                           (loop for type in additional-types
+                               collect `(tell [in-state [instance-of ,lv ,type] ,output-state-variable])))
                        ;; In the case where a new object is created
                        ;; (as opposed to just a symbol which is what Gary's format gives me)
                        ;; then the name and the object are a symbol and an object respectively
@@ -229,13 +238,30 @@
                      do (do-one sub-thing))))))
     (do-one form)))
 
+;;; Documentation for the outputs keyword:
+;;; It means to create a new object in the output state
+;;; Each element is a triple: (lv form alternative-type)
+;;; there are 3 different usages:
+;;; 1) A single type is provided, in that case make an object of that type
+;;; 2) A form is provided, in that case the form is used to make the object (not sure this is ever used)
+;;; 3) No 2nd argument is provide.  Just bind the lv to a symbol and assert that the symbol has the type
+;;;    there may be several such forms with the same lv.
+;;; Reason for all this: In Gary's dump format he might specify a new output and assert that it has several
+;;; types.  In his usage, I don't use the object modelling capabilities but instead have explicit type-of and part of assertions
+;;; In normal usage I do use the object modelling capabilities.
+;;; The syntax should be cleared up with a lv and then keyword arguments.
+;;; Maybe something like: :creation-type <xxx>, :creation-form <(xxx)>, :name <xxx>, :additional-types <(x, y, z)>
+
 (defmacro define-action (name inputs &key bindings prerequisites post-conditions (define-predicate t) super-types outputs typing abstract)
   ;; capture what was typed in
-  (let ((source-inputs inputs)
-        (source-outputs outputs)
-        (source-prerequisites prerequisites)
-        (source-post-conditions post-conditions)
-        (source-typing typing))
+  ;; this stuff isn't really used and leads to complexity and errors
+  ;; nuke out for now.
+  (let (;;(source-inputs inputs)
+        ;; (source-outputs outputs)
+        ;; (source-prerequisites prerequisites)
+        ;; (source-post-conditions post-conditions)
+        ;; (source-typing typing)
+        )
     ;; now inherit the source forms from all super types
     (labels ((do-one-supertype (type-name)
                (let ((the-type (gethash type-name *action-type-ht*)))
@@ -249,25 +275,32 @@
       (loop for type in super-types do (do-one-supertype type)))
     (let (;; (source (generate-source name source-inputs source-prerequisites source-post-conditions source-outputs source-typing))
           (hidden-bindings-alist (find-bindings prerequisites post-conditions typing))
-          (bindings-for-prereqs bindings)
-          (bindings-for-post-conditions bindings)
-          (bindings-for-typing bindings)
-          (raw-prerequisites (loop for prereq in prerequisites collect (if (predication-maker-p prereq) prereq `',prereq)))
-          (raw-post-conditions post-conditions)
-          (raw-inputs (mapcar #'lv-thing-name inputs))
-          (raw-outputs (loop for (name) in outputs collect (lv-thing-name name)))
-          (raw-output-typing (loop for (lv form type-for-null-form) in outputs
-                                 if (null form)
-                                 collect (list lv type-for-null-form)
-                                 else collect (list lv form)))
-          (raw-typing typing))
+          (bindings-for-prereqs nil)
+          (bindings-for-post-conditions nil)
+          (bindings-for-typing nil)
+          ;; This is only to create the action-type object
+          ;; which isn't used and has bugs
+          ;; (raw-prerequisites (loop for prereq in prerequisites collect (if (predication-maker-p prereq) prereq `',prereq)))
+          ;; (raw-post-conditions post-conditions)
+          ;; (raw-inputs (mapcar #'lv-thing-name inputs))
+          ;; (raw-outputs (loop for (name) in outputs collect (lv-thing-name name)))
+          ;; (raw-output-typing (loop for (lv . plist) in outputs
+          ;;                        for type-for-creation = (getf plist :type-for-creation)
+          ;;                        for form-for-creation = (getf plist :form-for-creation)
+          ;;                        for other-types = (getf plist :additional-types)
+          ;;                        if type-for-creation collect (list lv type-for-creation)
+          ;;                        else if form-for-creation collect (list lv form-for-creation)
+          ;;                        else if other-types append (loop for type in other-types collect (list lv type))
+          ;;                                                   ))
+          ;; (raw-typing typing)
+          )
     (multiple-value-setq (prerequisites post-conditions typing) (substitute-hidden-variables prerequisites post-conditions typing hidden-bindings-alist))
     (loop for (dotted-form lv) in (second (assoc 'prerequisites hidden-bindings-alist))
         do (push (ji:make-predication-maker `(value-of ,dotted-form ,lv)) bindings-for-prereqs))
     (loop for (dotted-form lv) in (second (assoc 'typing hidden-bindings-alist))
         do (push (ji:make-predication-maker `(value-of ,dotted-form ,lv)) bindings-for-typing))
     (loop for (dotted-form lv) in (second (assoc 'post-conditions hidden-bindings-alist))
-          do (push (ji:make-predication-maker `(value-of ,dotted-form ,lv)) bindings-for-post-conditions))
+        do (push (ji:make-predication-maker `(value-of ,dotted-form ,lv)) bindings-for-post-conditions))
     (flet ((make-logic-variables (names)
              (loop for var in names
                  if (logic-variable-maker-p var)
@@ -288,23 +321,26 @@
           (multiple-value-bind (real-prereqs output-prereqs) (find-prereqs-that-mention-outputs prerequisites outputs)
             `(eval-when (:compile-toplevel :load-toplevel :execute)
                (pushnew ',name *all-actions*)
-               ,(define-action-type-creator name
-                    :prerequisites raw-prerequisites
-                    :post-conditions raw-post-conditions
-                    :inputs raw-inputs
-                    :outputs raw-outputs
-                    :output-typing raw-output-typing
-                    :super-types super-types
-                    :typing raw-typing
-                    :source-inputs source-inputs
-                    :source-outputs source-outputs
-                    :source-typing source-typing
-                    :source-prerequisites source-prerequisites
-                    :source-post-conditions source-post-conditions
-                    :abstract abstract)
-               (let ((new-action-type (create-action-object ',name)))
-                 (thread-action-type new-action-type))
-               ;; ,source
+               ;; Not cleqr I actually need this and it gives
+               ;; errors sometimes due to bug of not identifying all logic variables
+               ;; used in it.
+               ;; ,(define-action-type-creator name
+               ;;      :prerequisites raw-prerequisites
+               ;;      :post-conditions raw-post-conditions
+               ;;      :inputs raw-inputs
+               ;;      :outputs raw-outputs
+               ;;      :output-typing raw-output-typing
+               ;;      :super-types super-types
+               ;;      :typing raw-typing
+               ;;      :source-inputs source-inputs
+               ;;      :source-outputs source-outputs
+               ;;      :source-typing source-typing
+               ;;      :source-prerequisites source-prerequisites
+               ;;      :source-post-conditions source-post-conditions
+               ;;      :abstract abstract)
+               ;; (let ((new-action-type (create-action-object ',name)))
+               ;;   (thread-action-type new-action-type))
+               ;;; ,source
                ,@(when define-predicate `((define-predicate ,name ,names (,@super-types ltms:ltms-predicate-model))))
                ,(generate-prereq-checker name inputs
                                          (append (process-bindings bindings-for-prereqs input-state-variable)
@@ -320,6 +356,7 @@
                            ,@(loop for lv in logic-variables
                                  collect `(unify ,lv (pop arguments)))
                            t)
+                         ,@(process-bindings bindings input-state-variable)
                          ,@(process-bindings bindings-for-post-conditions input-state-variable)
                          ,@(process-typing typing input-state-variable)
                          ,@(process-prerequisites real-prereqs input-state-variable)
@@ -492,7 +529,7 @@
                ,@(loop for lv in logic-variables
                      collect `(unify ,lv (pop arguments)))
                t)
-               ,@bindings
+             ,@bindings
              ,@(process-typing typing input-state-logic-variable)
              ,@(loop for raw-prereq in prerequisites
                    collect `(check-one-prerequisite ',action-name ?action ,raw-prereq ,input-state-logic-variable))]))
@@ -506,14 +543,16 @@
   (etypecase prerequisite
     (predication
      (let* ((found-it nil)
+            (prerequisite-cant-be-told (typep prerequisite 'tell-error-model))
             (prerequisite-is-negated (typep prerequisite 'ji::not-model))
             (prerequisite-is-non-stateful (typep prerequisite 'non-stateful-predicate-model))
             (thing-to-be-told (cond
+                               (prerequisite-cant-be-told nil)
                                (prerequisite-is-non-stateful prerequisite)
                                (prerequisite-is-negated `[not [in-state ,(second (predication-statement prerequisite)) ,input-state]])
                                (t `[in-state ,prerequisite ,input-state])))
         ;;; I could probably do this with forward rules, but the TMS hacking is more direct and less overhead
-            (stateful-pred (tell thing-to-be-told :justification :none))
+            (stateful-pred (if prerequisite-cant-be-told prerequisite (tell thing-to-be-told :justification :none)))
             (satisfied-pred (tell `[prerequisite-satisfied ,action ,prerequisite ,input-state]
                                   :justification `(there-means-satisfied (,stateful-pred))))
             (missing-pred (tell `[prerequisite-missing ,action ,prerequisite ,input-state]
