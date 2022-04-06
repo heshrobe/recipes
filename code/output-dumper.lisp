@@ -9,7 +9,7 @@
     (labels ((do-one (level)
                (typecase level
                  (ji::unbound-logic-variable (ji::joshua-logic-variable-name level))
-                 (list 
+                 (list
                   (loop for thing in level
                       collect (do-one thing)))
                  (recipe-object (apply #'smash "." (path-name level)))
@@ -25,7 +25,7 @@
   (labels ((do-one (level)
              (typecase level
                (ji::unbound-logic-variable (ji::joshua-logic-variable-name level))
-               (list 
+               (list
                 (loop for thing in level
                     collect (do-one thing)))
                (recipe-object (apply #'smash "." (path-name level)))
@@ -34,7 +34,7 @@
                (t level))))
     (do-one statement)))
 
-(defun describe-action (action-name)
+(defun describe-action-for-dumper (action-name)
   (let ((action (gethash action-name *action-type-ht*)))
     (when action
       `(define-action ,action-name
@@ -60,7 +60,7 @@
       for preds = (predications-newly-in-state state)
       do (format stream "~%~2tState ~a" (state-name state))
          (loop for pred in preds
-             do (format stream "~%~4t~a" (reformat-stateful-predication pred)))) 
+             do (format stream "~%~4t~a" (reformat-stateful-predication pred))))
   (format stream "~%Missing Prerequisites")
   (ask* `[prerequisite-missing ?action ?prereq ?state]
         (format stream "~%~2t~a for action ~a in state ~a"
@@ -73,6 +73,5 @@
       for action-name = (name action)
       unless (member action-name already-done)
       do (push action-name already-done)
-         (print (describe-action action-name) stream))
+         (print (describe-action-for-dumper action-name) stream))
   )
-

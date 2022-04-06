@@ -36,22 +36,24 @@
     `((prog1 t
 	,@(loop for assertion in assertions collect `(tell [in-state ,assertion ,output-state])))))))
 
-(defun process-assertions (assertions input-state)
+(defun process-assertions (name assertions input-state)
   (labels ((do-one (assertion)
 	     (cond
-	      ;; special case for debugging
-	      ((and (listp assertion) (not (predication-maker-p assertion)))
-	       (if (eql (first assertion) 'break)
-		   `(prog1 t ,assertion)
-		 assertion))
-	      ((eql (predication-maker-predicate assertion) 'or)
-	       (with-predication-maker-destructured (&rest assertions) assertion
-		 (loop for assertion in assertions
-		     collect (do-one assertion) into processed-assertions
-		     finally (return `(predication-maker '(or ,@processed-assertions))))))
-	      ((and (listp assertion) (not (predication-maker-p assertion))) assertion)
-	      ((compile-without-state assertion) assertion)
-	      (t `(predication-maker '(in-state ,assertion ,input-state))))))
+	       ;; special cases for debugging
+	       ((and (listp assertion) (not (predication-maker-p assertion)) (eql (first assertion) :break))
+		`(prog1 t (break ,@(rest assertion))))
+               ((and (listp assertion) (not (predication-maker-p assertion)) (eql (first assertion) :trace))
+                `(prog1 t (when *method-tracing*
+                            (format t "~%~vtIn ~a, " (* 2 ji::*rule-depth*) ',name)
+                            (format t ,@(rest assertion)))))
+	       ((and (listp assertion) (predication-maker-p assertion) (eql (predication-maker-predicate assertion) 'or))
+	        (with-predication-maker-destructured (&rest assertions) assertion
+		  (loop for assertion in assertions
+		        collect (do-one assertion) into processed-assertions
+		        finally (return `(predication-maker '(or ,@processed-assertions))))))
+	       ((and (listp assertion) (not (predication-maker-p assertion))) assertion)
+	       ((compile-without-state assertion) assertion)
+	       (t `(predication-maker '(in-state ,assertion ,input-state))))))
     (loop for thing in assertions collect (do-one thing))))
 
 (defun find-prereqs-that-mention-outputs (prereqs output-forms)
@@ -66,47 +68,64 @@
         else do (push prereq real-prereqs))
     (values real-prereqs output-prereqs)))
 
-(defun process-guards (assertions input-state) (process-assertions assertions input-state))
+(defun process-guards (name assertions input-state) (process-assertions name assertions input-state))
 
 (defun is-pretty-binding (assertion)
-  (when (and (predication-maker-p assertion)
-	     (eql (predication-maker-predicate assertion) 'value-of)
-	     (with-predication-maker-destructured (path value) assertion
-	       (if (and (not (logic-variable-maker-p path))
-			(listp path))
-		   nil
-		 (and (logic-variable-maker-p value)
-		      (find #\. (string (if (logic-variable-maker-p path)
-					    (logic-variable-maker-name path)
-					  path))
-			    :test #'char-equal)))))
-    t))
+  (cond
+   ((and (predication-maker-p assertion)
+     (eql (predication-maker-predicate assertion) 'value-of)
+         (with-predication-maker-destructured (path value) assertion
+           (if (and (not (logic-variable-maker-p path))
+                    (listp path))
+               nil
+             (and (logic-variable-maker-p value)
+                  (find #\. (string (if (logic-variable-maker-p path)
+                                        (logic-variable-maker-name path)
+                                      path))
+                        :test #'char-equal)))))
+    t)
+   ((listp assertion)
+    (and (logic-variable-maker-p (first assertion))
+         (eql (length assertion) 2)))
+   (t nil)))
+
 
 (defun de-prettify-binding (assertion)
-  (with-predication-maker-destructured  (path logic-variable) assertion
-    (flet ((process-path (list-of-strings)
-	     (loop for thing in list-of-strings
-		   if (char-equal (aref thing 0) #\?)
-		   collect (ji::make-logic-variable-maker (intern thing))
-		   else collect (intern thing))))
-      (if (logic-variable-maker-p path)
-	  (let* ((name (logic-variable-maker-name path))
-		 (exploded-path (explode-string name #\.))
-		 (real-path (cons (ji::make-logic-variable-maker (intern (first exploded-path)))
-				  (process-path (rest exploded-path)))))
-	  `(predication-maker '(value-of ,real-path ,logic-variable)))
-      (let ((expanded-path (process-path (explode-string path #\.))))
+  (flet ((process-path (list-of-strings)
+           (loop for thing in list-of-strings
+               if (char-equal (aref thing 0) #\?)
+               collect (ji::make-logic-variable-maker (intern thing))
+               else collect (intern thing))))
+    (cond
+     ((predication-maker-p assertion)
+      (with-predication-maker-destructured  (path logic-variable) assertion
+        (if (logic-variable-maker-p path)
+            (let* ((name (logic-variable-maker-name path))
+                   (exploded-path (explode-string name #\.))
+                   (real-path (cons (ji::make-logic-variable-maker (intern (first exploded-path)))
+                                    (process-path (rest exploded-path)))))
+              (ji:make-predication-maker `(value-of ,real-path ,logic-variable)))
+          (let ((expanded-path (process-path (explode-string path #\.))))
+            (ji:make-predication-maker `(value-of ,expanded-path ,logic-variable))))))
+     ((and (listp assertion) (eql (length assertion) 2) (logic-variable-maker-p (first assertion)))
+      (destructuring-bind (logic-variable path) assertion
+        (if (logic-variable-maker-p path)
+            (let* ((name (logic-variable-maker-name path))
+                   (exploded-path (explode-string name #\.))
+                   (real-path (cons (ji::make-logic-variable-maker (intern (first exploded-path)))
+                                    (process-path (rest exploded-path)))))
+              (ji:make-predication-maker `(value-of ,real-path ,logic-variable)))
+          (let ((expanded-path (process-path (explode-string path #\.))))
+            (ji:make-predication-maker `(value-of ,expanded-path ,logic-variable)))))))))
 
-	`(predication-maker '(value-of ,expanded-path ,logic-variable)))))))
-
-(defun process-bindings (assertions input-state)
+(defun process-bindings (name assertions input-state)
   (let ((expanded-bindings (loop for assertion in assertions
 			       collect (if (is-pretty-binding assertion)
 					   (de-prettify-binding assertion)
 					 assertion))))
-    (process-assertions expanded-bindings input-state)))
+    (process-assertions name expanded-bindings input-state)))
 
-(defun process-prerequisites (assertions input-state) (process-assertions assertions input-state))
+(defun process-prerequisites (name assertions input-state) (process-assertions name assertions input-state))
 
 (defun compile-without-state (form)
   (if (predication-maker-p form)
@@ -125,12 +144,18 @@
 ;;; For interpreting Gary's stuff instance-of
 (defparameter *typing-predicate* 'object-type-of)
 
-(defun process-typing (forms input-state)
-  (let ((raw-typing-forms (loop for form in forms
-                              if (and (listp form) (= (length form) 2))
-                              collect `(predication-maker '(,*typing-predicate* ,@form))
-                              else collect form)))
-    (process-assertions raw-typing-forms input-state)))
+(defun process-typing (name forms)
+  (loop for form in forms
+      if (and (listp form) (eql (first form) :break))
+      collect `(prog1 t (break ,@(rest form)))
+      else if (and (listp form) (eql (first form) :trace))
+      collect `(prog1 t (when *method-tracing*
+                          (format t "~%~vtIn ~a, " (* 2 ji::*rule-depth*) ',name)
+                          (format t ,@(rest form))))
+      else if (and (listp form) (= (length form) 2))
+      collect (destructuring-bind (thing type) form
+                (ji:make-predication-maker `(object-type-of ,thing ,type)))
+      else collect form))
 
 
 
@@ -155,24 +180,24 @@
 ;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define-predicate take-action (action-name action input-state output-state) (ltms:ltms-predicate-model))
+(define-predicate take-action (name action input-state output-state) (ltms:ltms-predicate-model))
 (define-predicate action-taken (action input-state output-state) (ltms:ltms-predicate-model))
-(define-predicate check-prerequisites (action-name action input-state) (ltms:ltms-predicate-model))
+(define-predicate check-prerequisites (name action input-state) (ltms:ltms-predicate-model))
 (define-predicate prerequisite-satisfied (action-description prereq input-state) (ltms:ltms-predicate-model))
 (define-predicate prerequisite-missing (action-description prereq input-state) (ltms:ltms-predicate-model))
-;; Action-name and inputs are in fact outputs, i.e. they are bound by invoking a rule
-(define-predicate action-and-inputs-to-achieve-condition (predication output-state action-name inputs) (ltms:ltms-predicate-model))
+;; name and inputs are in fact outputs, i.e. they are bound by invoking a rule
+(define-predicate action-and-inputs-to-achieve-condition (predication output-state name inputs) (ltms:ltms-predicate-model))
 
 (defun link-action (action prior-state next-state)
   ;; mainly for debugging if you pass in a list of
-  ;; the action-name and the arguments, then we'll
+  ;; the name and the arguments, then we'll
   ;; create the action argument
   (when (listp action)
     (destructuring-bind (name . arguments) action
       (setq action (make-instance 'action
                      :role-name name
                      :name name
-                     :action-name name
+                     :name name
                      :arguments arguments
                      :prior-state prior-state
                      :next-state next-state))))
@@ -252,16 +277,272 @@
 ;;; The syntax should be cleared up with a lv and then keyword arguments.
 ;;; Maybe something like: :creation-type <xxx>, :creation-form <(xxx)>, :name <xxx>, :additional-types <(x, y, z)>
 
-(defmacro define-action (name inputs &key bindings prerequisites post-conditions (define-predicate t) super-types outputs typing abstract)
+(defun mentioned-in? (lv-maker set-of-forms)
+  (let ((name (if (symbolp lv-maker) lv-maker (logic-variable-maker-name lv-maker))))
+    (labels ((in? (form)
+               (cond
+                ((logic-variable-maker-p form)
+                 (if (eql name (logic-variable-maker-name form))
+                     (return-from mentioned-in? t)
+                   nil))
+                ((predication-maker-p form)
+                 (loop for term in (predication-maker-statement form)
+                     do (in? term)))
+                ((listp form)
+                 (loop for term in form do (in? term)))
+                ((eql name form)
+                 (return-from mentioned-in? t))
+                (t nil))))
+      (in? set-of-forms))))
+
+(defclass usage-record ()
+  ((variable-name :accessor variable-name :initarg :variable-name)
+   (ref :accessor ref :initarg :ref :initform nil)
+   (def :accessor def :initarg :def :initform nil)))
+
+(defmethod print-object ((record usage-record) stream)
+  (format stream "#<usage ~a ref ~a def ~a>" (variable-name record) (ref record) (def record)))
+
+(eval-when (:compile-toplevel :load-toplevel)
+  (defparameter *set-names* '(head bindings guards prerequisites plan post-conditions)))
+
+(defmacro compiler-warn (format-string &rest args)
+  #+allegro
+  `(compiler::warn ,format-string ,@args)
+  #+sbcl
+  `(sb-c:compiler-style-warn  ,format-string ,@args))
+
+(defun find-all-variables (set-of-stuff tag already-seen output-variables)
+  (let ((answers nil))
+    (labels ((do-one (stuff &optional predication-maker)
+               (cond
+                ((predication-maker-p stuff)
+                 (do-one (predication-maker-statement stuff) (unless (eql tag 'head) stuff)))
+                ((logic-variable-maker-p stuff)
+                 (let ((string-of-name (string (logic-variable-maker-name stuff))))
+                   (unless (search "anonymous" string-of-name :test #'string-equal)
+                     (let* ((first-dot (position #\. string-of-name :test #'char-equal))
+                            (symbol (if first-dot
+                                        (intern (subseq string-of-name 0 first-dot))
+                                      (intern string-of-name)))
+                            (entry (find symbol answers :key #'variable-name))
+;;;                            (abstract-variable (when predication-maker (corresponding-abstract-variable predication-maker stuff)))
+;;;                            (predicate (when predication-maker (predication-maker-predicate predication-maker)))
+;;;                            (is-output? (or (eql tag 'head)
+;;;                                            (when predication-maker (lookup-predicate-output-variable predicate abstract-variable))))
+;;;                            (is-new-locally (null entry))
+                            )
+                       ;; (format t "~%Var ~a Pred maker ~a Pred ~a Abs-var ~a Output? ~a" symbol predication-maker predicate abstract-variable is-output?)
+                       (unless entry
+                         (setq entry (make-instance 'usage-record :variable-name symbol))
+                         (push entry answers))
+                       ;; Maybe the logic should be simpler:
+                       ;; Except for the head
+                       ;; Any 2nd mention is a ref, Any 1st mention is a def
+                       ;; For any normal predicate this seems true, it will bind the unbound variables.
+                       ;; when pattern matching.
+                       (cond
+                        ((member symbol already-seen)
+                         ;; a 2nd mention of an variable that is an output-variable of the predicate
+                         ;; that's already defined in this set is taken to be a reference
+                         ;; (unless (and (def entry) is-new-locally)
+                         ;;   (setf (ref entry) t))
+                         (if (member symbol output-variables :key #'logic-variable-maker-name)
+                             (setf (def entry) t)
+                           (setf (ref entry) t))
+                         )
+                        (t (push symbol already-seen)
+                           ;; (if is-output?
+                           ;;     (setf (def entry) t)
+                           ;;   (setf (ref entry) t))
+                           (cond ((eql tag 'head)
+                                  (if (member symbol output-variables :key #'logic-variable-maker-name)
+                                      (setf (ref entry) t)
+                                    (setf (def entry) t)))
+                                 (t (setf (def entry) t)))
+                           ))))))
+                ((and (listp stuff) (= (length stuff) 2) (eql tag 'bindings) (logic-variable-maker-p (first stuff))
+                      (null (find #\. (string (logic-variable-maker-name (first stuff))))))
+                 (let* ((name (logic-variable-maker-name (first stuff)))
+                        (entry (find name answers :key #'variable-name)))
+                   (unless entry
+                     (setq entry (make-instance 'usage-record :variable-name name :def t))
+                     (push entry answers))
+                   (push name already-seen))
+                 (do-one (rest stuff)) predication-maker)
+                ((listp stuff)
+                 (loop for thing in stuff do (do-one thing predication-maker))))))
+      (do-one set-of-stuff))
+    (values (list tag answers)
+            already-seen)))
+
+
+(defun build-usage-map (head bindings typing prerequisites post-conditions output-variables)
+  ;; Do we really want to ignore the typing
+  ;; or do we want to treat it as a usage
+  ;; (declare (ignore typing))
+  (let ((alist nil) (all-refs nil))
+    (macrolet ((do-one (name)
+                 `(multiple-value-bind (entry updated-all-ref)
+                      (find-all-variables ,name ',name all-refs output-variables)
+                    (push entry alist)
+                    (setq all-refs updated-all-ref))))
+      (do-one head)
+      (do-one bindings)
+      (do-one prerequisites)
+      (do-one typing)
+      (do-one post-conditions))
+  alist))
+
+;;; The head is special: Any ref in the head should be def'd in the body
+;;; All others anything def'd should be checked against all followers plus the head.
+;;; Fix: I use compiler::warn here which is the right thing for ACL, need to shadow warn
+;;; and import the right thing as warn for each implementation (mainly S-BCL).
+(defun perform-usage-checks (alist method &optional ignore-list)
+  (let* ((head (second (assoc 'head alist)))
+         (bindings (second (assoc 'bindings alist)))
+         (typing (second (assoc 'typing alist)))
+         (plan (second (assoc 'plan alist)))
+         (guards (second (assoc 'guards alist)))
+         (prerequisites (second (assoc 'prerequisites alist)))
+         (post-conditions (second (assoc 'post-conditions alist)))
+         (ignore-list (loop for lv in ignore-list collect (ji::logic-variable-maker-name lv))))
+    (macrolet ((do-checks (set-name)
+                 (let* ((position (position set-name *set-names*))
+                        (before (subseq *set-names* 0 (1+ position)))
+                        (after (subseq *set-names* position)))
+                   `(loop for entry in ,set-name
+                        for var = (variable-name entry)
+                        for def = (def entry)
+                        for ref = (ref entry)
+                        do ,(cond
+                             ((eql set-name 'head)
+                              `(cond
+                                (ref (unless (or def (check-for-over-sets var (list ,@after) 'def))
+                                       (compiler-warn "In ~a, Variable ~a is referenced in the head but is not defined after"
+                                                       method var)))
+                                (def
+                                    (unless (or ref (check-for-over-sets var (list typing ,@after) 'ref) (member var ignore-list))
+                                       (compiler-warn "In ~a, Varable ~a is defined in the head but is not referenced after"
+                                                       method var)))))
+                             (t `(cond
+                                  (ref (unless (or def (check-for-over-sets var (list ,@before) 'def))
+                                         (compiler-warn "In ~a, Variable ~a is referenced in the ~a but is not defined earlier" method var ',set-name)))
+                                  (def (unless (or ref (check-for-over-sets var (list head ,@after) 'ref) (member var ignore-list))
+                                         (compiler-warn "In ~a, Variable ~a is defined in the ~a but is not used"
+                                                        method var ',set-name))))))))))
+      (labels ((check-for (variable-name set type)
+                 (let ((entry (find variable-name set :key #'variable-name)))
+                   (cond ((null entry) nil)
+                         ((eql type 'def) (def entry))
+                         ((eql type 'ref) (ref entry)))))
+               (check-for-over-sets (variable-name sets type)
+                 (loop for set in sets thereis (check-for variable-name set type)))
+               (is-used (var)
+                 (let ((used-in nil))
+                   (loop for (set-name entries) in alist
+                       for entry = (find var entries :key #'variable-name)
+                       when (and entry (ref entry))
+                       do (push set-name used-in))
+                   used-in)))
+        ;; 1) for variables in the head, make sure that all variables are referenced
+        (do-checks head)
+        ;; 2) for variables in bindings, if it's defined make sure it's referenced somewhere
+        ;; if it's reference make sure it was defined in the head.or in another binding.
+        (do-checks bindings)
+        ;; 3) Variables referenced in the prereqs should have been defined in the head, bindings or another prereq
+        ;;    Variables defined in the prereqs should be referenced in the plan, post-conditions or another prereq
+        (do-checks guards)
+        (do-checks prerequisites)
+        ;; 4) Variable referenced in plan should have defined in head, bindings, prereqs, or plan
+        ;;    Variables defined in the plan should be used in the plan or the post-conditions
+        (do-checks plan)
+        ;; 5) Variables referenced in the post-conditions should have been defined in head, bindings, prerequs, plan or post-conditions
+        ;;    Variables defined in the post-conditions should be used in the post-conditions
+        (do-checks post-conditions)
+        (loop for var in ignore-list
+            for used-in = (is-used var)
+            when used-in
+            do (compiler-warn "In ~a, variable ~a is ignored but it is used in ~{~a, ~^and ~}" method var used-in))
+        ))))
+
+
+(defun normal-binding? (form)
+  (or (and (predication-maker-p form)
+           (eql (predication-maker-predicate form) 'value-of))
+      (and (listp form)
+           (= (length form) 2)
+           (logic-variable-maker-p (first form)))))
+
+(defun substitute-hidden-bindings (set-of-stuff reference-alist)
+  (labels ((do-one (form)
+             (cond
+              ((and (predication-maker-p form) (eql (predication-maker-predicate form) 'value-of))
+               (with-predication-maker-destructured (slot value) form
+                 (ji:make-predication-maker
+                  (list (predication-maker-predicate form)
+                        (explode slot #\.)
+                        (do-one value)))))
+              ((predication-maker-p form)
+               (ji:make-predication-maker
+                (loop for token in (predication-maker-statement form)
+                    collect (do-one token))))
+              ((and (logic-variable-maker-p form) (find #\. (string (logic-variable-maker-name form)) :test #'char-equal))
+               (let* ((entry (assoc (logic-variable-maker-name form) reference-alist)))
+                 (second entry)))
+              ((logic-variable-maker-p form) form)
+              ((listp form)
+               (loop for token in form collect (do-one token)))
+              ((and (symbolp form) (find #\. (string form) :test #'char-equal))
+               (let* ((entry (assoc form reference-alist)))
+                 (second entry)))
+              (t form))))
+    (do-one set-of-stuff)
+    ))
+
+(defun merge-and-substitute-hiDden-bindings (set-of-stuff reference-alist bindings-by-set-type set-type)
+  ;; (break "~{~a~^, ~}~%~a~%~{~a~^,~}~%~a" set-of-stuff reference-alist bindings-by-set-type set-type)
+  (let ((bindings-for-set-type (second (assoc set-type bindings-by-set-type))))
+    (cond
+      ((and (null reference-alist) (eql set-type 'bindings))
+       (loop for thing in set-of-stuff
+             if (normal-binding? thing)
+               collect (de-prettify-binding thing)
+             else collect thing))
+      ((null reference-alist) set-of-stuff)
+      ((and (null bindings-for-set-type) (eql set-type 'bindings))
+       (loop for thing in set-of-stuff
+             if (normal-binding? thing)
+               collect (de-prettify-binding thing)
+             else collect (substitute-hidden-bindings thing reference-alist)))
+      ((null bindings-for-set-type)
+       (substitute-hidden-bindings set-of-stuff reference-alist))
+      (t (let ((already-emitted nil))
+           ;; loop over the forms
+           ;; for each check all the implicit bindings
+           ;; and if it's already been emitted skip it
+           ;; otherwise if it's in the form, emit it and remember that it's been emitted
+           (loop for thing in set-of-stuff
+               do (print thing)
+                 append (loop for (implicit-binding lv) in bindings-for-set-type
+                              when (and (mentioned-in? implicit-binding thing)
+                                        (not (member lv already-emitted)))
+                                collect (de-prettify-binding (ji:make-predication-maker `(value-of ,implicit-binding ,lv)))
+                            and do (push lv already-emitted))
+                 if (normal-binding? thing)
+                   collect (de-prettify-binding thing)
+               else collect (substitute-hidden-bindings thing reference-alist)))))))
+
+(defmacro define-action (name inputs &key bindings prerequisites post-conditions (define-predicate t) super-types outputs output-variables typing abstract ignore)
   ;; capture what was typed in
   ;; this stuff isn't really used and leads to complexity and errors
   ;; nuke out for now.
-  (let (;;(source-inputs inputs)
-        ;; (source-outputs outputs)
-        ;; (source-prerequisites prerequisites)
-        ;; (source-post-conditions post-conditions)
-        ;; (source-typing typing)
-        )
+  (let ((source-inputs inputs)
+        (source-outputs outputs)
+        (source-prerequisites prerequisites)
+        (source-post-conditions post-conditions)
+        (source-typing typing)
+        (source nil))
     ;; now inherit the source forms from all super types
     (labels ((do-one-supertype (type-name)
                (let ((the-type (gethash type-name *action-type-ht*)))
@@ -273,112 +554,133 @@
                        outputs (remove-duplicates (append (source-outputs the-type) outputs) :test #'equal))
                  (loop for type in (super-types the-type) do (do-one-supertype type)))))
       (loop for type in super-types do (do-one-supertype type)))
-    (let (;; (source (generate-source name source-inputs source-prerequisites source-post-conditions source-outputs source-typing))
-          (hidden-bindings-alist (find-bindings prerequisites post-conditions typing))
-          (bindings-for-prereqs nil)
-          (bindings-for-post-conditions nil)
-          (bindings-for-typing nil)
-          ;; This is only to create the action-type object
-          ;; which isn't used and has bugs
-          ;; (raw-prerequisites (loop for prereq in prerequisites collect (if (predication-maker-p prereq) prereq `',prereq)))
-          ;; (raw-post-conditions post-conditions)
-          ;; (raw-inputs (mapcar #'lv-thing-name inputs))
-          ;; (raw-outputs (loop for (name) in outputs collect (lv-thing-name name)))
-          ;; (raw-output-typing (loop for (lv . plist) in outputs
-          ;;                        for type-for-creation = (getf plist :type-for-creation)
-          ;;                        for form-for-creation = (getf plist :form-for-creation)
-          ;;                        for other-types = (getf plist :additional-types)
-          ;;                        if type-for-creation collect (list lv type-for-creation)
-          ;;                        else if form-for-creation collect (list lv form-for-creation)
-          ;;                        else if other-types append (loop for type in other-types collect (list lv type))
-          ;;                                                   ))
-          ;; (raw-typing typing)
-          )
-    (multiple-value-setq (prerequisites post-conditions typing) (substitute-hidden-variables prerequisites post-conditions typing hidden-bindings-alist))
-    (loop for (dotted-form lv) in (second (assoc 'prerequisites hidden-bindings-alist))
-        do (push (ji:make-predication-maker `(value-of ,dotted-form ,lv)) bindings-for-prereqs))
-    (loop for (dotted-form lv) in (second (assoc 'typing hidden-bindings-alist))
-        do (push (ji:make-predication-maker `(value-of ,dotted-form ,lv)) bindings-for-typing))
-    (loop for (dotted-form lv) in (second (assoc 'post-conditions hidden-bindings-alist))
-        do (push (ji:make-predication-maker `(value-of ,dotted-form ,lv)) bindings-for-post-conditions))
-    (flet ((make-logic-variables (names)
-             (loop for var in names
-                 if (logic-variable-maker-p var)
-                 collect var
-                 else collect `(logic-variable-maker ,(intern (string-upcase (format nil "?~a" var))))))
-           (make-symbols-from-lvs (lvs)
-             (loop for lv in lvs
-                 for name = (logic-variable-maker-name lv)
-                 for pname-string = (subseq (string name) 1) ;; strip off the ?
-                 collect (intern pname-string))))
-      (let* ((logic-variables (make-logic-variables inputs))
-             (names (make-symbols-from-lvs logic-variables))
-             (rule-name (intern (string-upcase (format nil "do-~a" name))))
-             (jusification-mnemonic (intern (string-upcase (format nil "prerequisites-satisfied-~a" name))))
-             (state-logic-variables (make-logic-variables '(input-state output-state)))
-             (action-variable (first (make-logic-variables '(action)))))
-        (destructuring-bind (input-state-variable output-state-variable) state-logic-variables
-          (multiple-value-bind (real-prereqs output-prereqs) (find-prereqs-that-mention-outputs prerequisites outputs)
-            `(eval-when (:compile-toplevel :load-toplevel :execute)
-               (pushnew ',name *all-actions*)
-               ;; Not cleqr I actually need this and it gives
-               ;; errors sometimes due to bug of not identifying all logic variables
-               ;; used in it.
-               ;; ,(define-action-type-creator name
-               ;;      :prerequisites raw-prerequisites
-               ;;      :post-conditions raw-post-conditions
-               ;;      :inputs raw-inputs
-               ;;      :outputs raw-outputs
-               ;;      :output-typing raw-output-typing
-               ;;      :super-types super-types
-               ;;      :typing raw-typing
-               ;;      :source-inputs source-inputs
-               ;;      :source-outputs source-outputs
-               ;;      :source-typing source-typing
-               ;;      :source-prerequisites source-prerequisites
-               ;;      :source-post-conditions source-post-conditions
-               ;;      :abstract abstract)
-               ;; (let ((new-action-type (create-action-object ',name)))
-               ;;   (thread-action-type new-action-type))
-               ;;; ,source
-               ,@(when define-predicate `((define-predicate ,name ,names (,@super-types ltms:ltms-predicate-model))))
-               ,(generate-prereq-checker name inputs
-                                         (append (process-bindings bindings-for-prereqs input-state-variable)
-                                                 (process-bindings bindings-for-typing input-state-variable))
-                                         real-prereqs
-                                         input-state-variable
-                                         typing)
-               ,@(unless abstract (generate-prereq-achievers name logic-variables post-conditions (process-typing typing input-state-variable)))
-               (defrule ,rule-name (:backward)
-                 then [take-action ,name ?action ,@state-logic-variables]
-                 if [and (let ((arguments (arguments ?action)))
-                           ;; unpack the arguments from the action object
-                           ,@(loop for lv in logic-variables
-                                 collect `(unify ,lv (pop arguments)))
-                           t)
-                         ,@(process-bindings bindings input-state-variable)
-                         ,@(process-bindings bindings-for-post-conditions input-state-variable)
-                         ,@(process-typing typing input-state-variable)
-                         ,@(process-prerequisites real-prereqs input-state-variable)
-                         ;; so at this point we've checked that the prerequisites are satisfied
-                         (prog1 t
-                           (when (unbound-logic-variable-p ,output-state-variable)
-                             (unify ,output-state-variable
-                                    (intern-state (intern (string-upcase (gensym "state-"))) ,input-state-variable)))
-                           (let* ((action-taken-pred (tell [action-taken ?action ,input-state-variable ,output-state-variable]
-                                                           :justification :none))
-                                  (justification (build-justification-from-backward-support ji::*backward-support*)))
-                             (destructuring-bind (nothing true-stuff false-stuff unknown-stuff) justification
-                               (declare (ignore nothing))
-                               (justify action-taken-pred +true+ ',jusification-mnemonic true-stuff false-stuff unknown-stuff))
-                             (unify ,action-variable (link-action ?action ,input-state-variable ,output-state-variable))
-                             ,@(process-new-outputs outputs action-variable output-state-variable)
-                             ,@(let* ((mnemonic (intern (string-upcase (format nil "action-taken-~A" name))))
-                                      (justification-2 `(list ',mnemonic (list action-taken-pred))))
-                                 (process-post-conditions post-conditions output-state-variable justification-2))
-                             ,@(process-post-conditions output-prereqs input-state-variable)))
-                         ]))
-            )))))))
+    (setq source (generate-source name source-inputs source-prerequisites source-post-conditions source-outputs source-typing))
+    (multiple-value-bind (early-typing late-typing)
+        (loop for type in typing
+            for variable = (first type)
+            if (and (eql variable :break) (loop for var in (rest (rest type)) thereis (mentioned-in? var inputs)))
+            collect type into early
+            else when (and (mentioned-in? variable inputs)
+                           (not (member (logic-variable-maker-name variable) outputs :key #'(lambda (thing) (logic-variable-maker-name (first thing)))))
+                           (not (member (logic-variable-maker-name variable) output-variables :key #'logic-variable-maker-name)))
+            collect type into early
+            else collect type into late
+            finally (return (values early late)))
+      (multiple-value-bind (all-refs hidden-bindings-alist) (find-hidden-bindings prerequisites post-conditions late-typing bindings)
+        (let (;; (bindings-for-prereqs nil)
+              ;; (bindings-for-post-conditions nil)
+              ;; (bindings-for-typing nil)
+              ;; This is only to create the action-type object
+              ;; which isn't used and has bugs
+              ;; (raw-prerequisites (loop for prereq in prerequisites collect (if (predication-maker-p prereq) prereq `',prereq)))
+              ;; (raw-post-conditions post-conditions)
+              ;; (raw-inputs (mapcar #'lv-thing-name inputs))
+              ;; (raw-outputs (loop for (name) in outputs collect (lv-thing-name name)))
+              ;; (raw-output-typing (loop for (lv . plist) in outputs
+              ;;                        for type-for-creation = (getf plist :type-for-creation)
+              ;;                        for form-for-creation = (getf plist :form-for-creation)
+              ;;                        for other-types = (getf plist :additional-types)
+              ;;                        if type-for-creation collect (list lv type-for-creation)
+              ;;                        else if form-for-creation collect (list lv form-for-creation)
+              ;;                        else if other-types append (loop for type in other-types collect (list lv type))
+              ;;                                                   ))
+              ;; (raw-typing typing)
+              )
+          (let ((usage-map (build-usage-map inputs bindings typing prerequisites post-conditions output-variables)))
+            (perform-usage-checks usage-map name ignore))
+          ;; (multiple-value-setq (prerequisites post-conditions typing) (substitute-hidden-variables prerequisites post-conditions typing hidden-bindings-alist))
+          ; (loop for (dotted-form lv) in (second (assoc 'prerequisites hidden-bindings-alist))
+          ;     do (push (ji:make-predication-maker `(value-of ,dotted-form ,lv)) bindings-for-prereqs))
+          ; (loop for (dotted-form lv) in (second (assoc 'typing hidden-bindings-alist))
+          ;     do (push (ji:make-predication-maker `(value-of ,dotted-form ,lv)) bindings-for-typing))
+          ; (loop for (dotted-form lv) in (second (assoc 'post-conditions hidden-bindings-alist))
+          ;     do (push (ji:make-predication-maker `(value-of ,dotted-form ,lv)) bindings-for-post-conditions))
+          (flet ((make-logic-variables (names)
+                   (loop for var in names
+                       if (logic-variable-maker-p var)
+                       collect var
+                       else collect `(logic-variable-maker ,(intern (string-upcase (format nil "?~a" var))))))
+                 (make-symbols-from-lvs (lvs)
+                   (loop for lv in lvs
+                       for name = (logic-variable-maker-name lv)
+                       for pname-string = (subseq (string name) 1) ;; strip off the ?
+                       collect (intern pname-string))))
+            (let* ((logic-variables (make-logic-variables inputs))
+                   (names (make-symbols-from-lvs logic-variables))
+                   (rule-name (intern (string-upcase (format nil "do-~a" name))))
+                   (jusification-mnemonic (intern (string-upcase (format nil "prerequisites-satisfied-~a" name))))
+                   (state-logic-variables (make-logic-variables '(input-state output-state)))
+                   (action-variable (first (make-logic-variables '(action)))))
+              (destructuring-bind (input-state-variable output-state-variable) state-logic-variables
+                ;; this is here in an attempt to deal with the stuff Gary produces from Impact.
+                ;; Probably that should be dealt with in the translation from Impact to actions
+                (multiple-value-bind (real-prereqs output-prereqs) (find-prereqs-that-mention-outputs prerequisites outputs)
+                  (declare (ignore real-prereqs output-prereqs))
+                  `(eval-when (:compile-toplevel :load-toplevel :execute)
+                     (pushnew ',name *all-actions*)
+                     ;; Not cleqr I actually need this for anythig other than to get
+                     ;; the source cod from a super-type
+                     ;; the part that produces actual logic-variables and predications
+                     ;; doesn't seem to be used and it gives
+                     ;; errors sometimes due to bug of not identifying all logic variables
+                     ;; used in it.
+                     ,(define-action-type-creator name
+                          ;;      :prerequisites raw-prerequisites
+                          ;;      :post-conditions raw-post-conditions
+                          ;;      :inputs raw-inputs
+                          ;;      :outputs raw-outputs
+                          ;;      :output-typing raw-output-typing
+                          ;;      :super-types super-types
+                          ;;      :typing raw-typing
+                          :source-inputs source-inputs
+                          :source-outputs source-outputs
+                          :source-typing source-typing
+                          :source-prerequisites source-prerequisites
+                          :source-post-conditions source-post-conditions
+                          :abstract abstract)
+                     (let ((new-action-type (create-action-object ',name)))
+                       (thread-action-type new-action-type))
+                     ,source
+                     ,@(when define-predicate `((define-predicate ,name ,names (,@super-types ltms:ltms-predicate-model))))
+                     ,(generate-prereq-checker name inputs
+                                               (process-typing name early-typing)
+                                               (merge-and-substitute-hidden-bindings (process-bindings name bindings input-state-variable) all-refs hidden-bindings-alist 'bindings)
+                                               (merge-and-substitute-hidden-bindings (process-typing name late-typing) all-refs hidden-bindings-alist 'typing)
+                                               (merge-and-substitute-hidden-bindings prerequisites all-refs hidden-bindings-alist 'prerequisites)
+                                               input-state-variable)
+                     ,@(unless abstract (generate-prereq-achievers name logic-variables post-conditions (process-typing name typing)))
+                     (defrule ,rule-name (:backward)
+                       then [take-action ,name ?action ,@state-logic-variables]
+                       if [and (let ((arguments (arguments ?action)))
+                                 ;; unpack the arguments from the action object
+                                 ,@(loop for lv in logic-variables
+                                       collect `(unify ,lv (pop arguments)))
+                                 t)
+                               ,@(process-typing name early-typing)
+                               ,@(merge-and-substitute-hidden-bindings (process-bindings name bindings input-state-variable) all-refs hidden-bindings-alist 'bindings)
+                               ,@(merge-and-substitute-hidden-bindings (process-typing name late-typing) all-refs hidden-bindings-alist 'typing)
+                               ,@(merge-and-substitute-hidden-bindings (process-prerequisites name prerequisites input-state-variable) all-refs hidden-bindings-alist 'prerequisites)
+                               ;; so at this point we've checked that the prerequisites are satisfied
+                               (prog1 t
+                                 (when (unbound-logic-variable-p ,output-state-variable)
+                                   (unify ,output-state-variable
+                                          (intern-state (intern (string-upcase (gensym "state-"))) ,input-state-variable)))
+                                 (let* ((action-taken-pred (tell [action-taken ?action ,input-state-variable ,output-state-variable]
+                                                                 :justification :none))
+                                        (justification (build-justification-from-backward-support ji::*backward-support*)))
+                                   (destructuring-bind (nothing true-stuff false-stuff unknown-stuff) justification
+                                     (declare (ignore nothing))
+                                     (justify action-taken-pred +true+ ',jusification-mnemonic true-stuff false-stuff unknown-stuff))
+                                   (unify ,action-variable (link-action ?action ,input-state-variable ,output-state-variable))
+                                   ,@(process-new-outputs outputs action-variable output-state-variable)
+                                   ,@(let* ((mnemonic (intern (string-upcase (format nil "action-taken-~A" name))))
+                                            (justification-2 `(list ',mnemonic (list action-taken-pred))))
+                                       (merge-and-substitute-hidden-bindings (process-post-conditions post-conditions output-state-variable justification-2)
+                                                                             all-refs hidden-bindings-alist 'post-conditions))
+                                   ))
+                               ]))
+                  )))))))
+    ))
 
 
 
@@ -483,6 +785,53 @@
       )
     refs))
 
+(defun find-hidden-bindings (prerequisites post-conditions typing bindings)
+  (let ((bindings-by-set-type nil) (master-alist nil))
+    (labels ((do-one (form set-type)
+               (cond
+                ((and (predication-maker-p form)
+                      (eql (predication-maker-predicate form) 'value-of))
+                 (when  (not (eql set-type 'bindings))
+                   ;; don't scan value-of forms if we're doing bindings
+                   (with-predication-maker-destructured (slot value) form
+                     (declare (ignore value))
+                     (do-one slot set-type))))
+                ((predication-maker-p form)
+                 (do-one (predication-maker-statement form) set-type))
+                ((logic-variable-maker-p form)
+                 (do-one (logic-variable-maker-name form) set-type))
+                ((and (listp form) (= (length form) 2) (eql set-type 'bindings))
+                 ;; if it's the short syntax and we're doing bindings, then do nothing
+                 )
+                ((listp form)
+                 (loop for token in form do (do-one token set-type)))
+                ((and (symbolp form) (find #\. (string form) :test #'char-equal))
+                 ;; master-alist holds bindings across everything to avoid duplication
+                 ;; Bindings-By-Set-Type is an Alist set-typeed by the name of the set.  It only
+                 ;; gets an entry if this was a new symbol
+                 (let ((entry (assoc set-type bindings-by-set-type)))
+                   (unless entry
+                     (setq entry (list set-type nil))
+                     (push entry bindings-by-set-type))
+                   (unless (member form master-alist :key #'first :test #'equal)
+                     ;; it's a new symbol
+                     (let ((pair (list form (ji:make-logic-variable-maker (make-name '?lv)))))
+                       ;; add it to the master alist
+                       (push pair master-alist)
+                       ;; and to the alist of new entries for this set-type
+                       (push pair (second entry)))))))))
+      (loop for binding in bindings do (do-one binding 'bindings))
+      (loop for type in typing do (do-one type 'typing))
+      (Loop for prereq in prerequisites do (do-one prereq 'prerequisites))
+      (loop for postcon in post-conditions do (do-one postcon 'post-conditions))
+      )
+    ;; Reverse the entries so that they are in the order of occurence
+    (loop for entry in bindings-by-set-type
+        do (setf (second entry) (nreverse (second entry))))
+    (values master-alist bindings-by-set-type)))
+
+
+
 (defun substitute-hidden-variables (prerequisites post-conditions typing reference-alist)
   (labels ((do-one (form key)
              (cond
@@ -522,24 +871,25 @@
 ;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defun generate-prereq-checker (action-name logic-variables bindings prerequisites input-state-logic-variable typing)
-  `(defrule ,(smash "-" action-name 'check-prerequisites) (:backward)
-     then [check-prerequisites ,action-name ?action ,input-state-logic-variable]
+(defun generate-prereq-checker (name logic-variables early-typeing bindings typing prerequisites input-state-logic-variable)
+  `(defrule ,(smash "-" name 'check-prerequisites) (:backward)
+     then [check-prerequisites ,name ?action ,input-state-logic-variable]
      if [and (let ((arguments (arguments ?action)))
                ,@(loop for lv in logic-variables
                      collect `(unify ,lv (pop arguments)))
                t)
+             ,@early-typeing
              ,@bindings
-             ,@(process-typing typing input-state-logic-variable)
+             ,@typing
              ,@(loop for raw-prereq in prerequisites
-                   collect `(check-one-prerequisite ',action-name ?action ,raw-prereq ,input-state-logic-variable))]))
+                   collect `(check-one-prerequisite ',name ?action ,raw-prereq ,input-state-logic-variable))]))
 
 ;;; The workhorse for the rule generated above
 ;;; Notice the juggling that goes on if the prerequisite is negated
 ;;; You have to ask [not [in-state xxx] state] as opposed to [in-state [not xxx] state]
 ;;; Note: This assumes that all prerequisites are stateful
-(defun check-one-prerequisite (action-name action prerequisite input-state)
-  (declare (ignore action-name))
+(defun check-one-prerequisite (name action prerequisite input-state)
+  (declare (ignore name))
   (etypecase prerequisite
     (predication
      (let* ((found-it nil)
@@ -577,8 +927,8 @@
 (defun check-prerequisites (action state)
   (when (symbolp state)
     (setq state (intern-state state)))
-  (let ((action-name (name action)))
-    (ask* `[check-prerequisites ,action-name ,action ,state]
+  (let ((name (name action)))
+    (ask* `[check-prerequisites ,name ,action ,state]
           t))
   )
 
@@ -734,14 +1084,14 @@
 ;;; It interns the input and ouptut states and links the input state
 ;;; to the output state of the previous action.
 
-(defun do-action (action-name previous-output-state input-state output-state &rest arguments)
+(defun do-action (name previous-output-state input-state output-state &rest arguments)
   (when (symbolp previous-output-state) (setq previous-output-state (intern-state previous-output-state nil)))
   (when (symbolp input-state) (setq input-state (intern-state input-state nil)))
   (when (symbolp output-state) (setq output-state (intern-state output-state input-state nil)))
   ;; Link input state to previous output-state with null action
   ;; this will cause predication inheritance from previous states
   (link-state previous-output-state input-state)
-  (let ((action (make-instance 'action :name action-name :role-name (make-name action-name) :arguments arguments)))
+  (let ((action (make-instance 'action :name name :role-name (make-name name) :arguments arguments)))
     (check-prerequisites action input-state)
     ;; Note that achieve-missing-prerequisite checks that the prereq is still missing
     ;; it might have been achieved serendipitously by achieving another prereq
@@ -755,7 +1105,7 @@
     ;; We're assuming here that we were successful in achieving all the prerequisites
     ;; Otherwise the take-action rule will fail.
     ;; This has the effect of asserting the post-conditions in the output-state
-    (ask* `[take-action ,action-name ,action ,input-state ,output-state]
+    (ask* `[take-action ,name ,action ,input-state ,output-state]
           ))
   output-state)
 
@@ -765,8 +1115,8 @@
   (when (symbolp input-state) (setq input-state (intern-state input-state)))
   (cond ((null output-state) (setq output-state (intern-state (make-name 'output) input-state)))
         ((symbolp output-state) (setq output-state (intern-state output-state input-state))))
-  (let ((action-name (name action)))
-    (ask* `[take-action ,action-name ,action ,input-state ,output-state]
+  (let ((name (name action)))
+    (ask* `[take-action ,name ,action ,input-state ,output-state]
           ))
   (values (prior-action output-state) output-state))
 
@@ -807,194 +1157,3 @@
 (defrule possible-referent-is-identity (:backward)
   :then [possible-referent ?word ?object ?object]
   :if t)
-
-
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;
-;;; Converting the list structured attack plan into a fully backpointered
-;;; plan linking in the actions and states
-;;; This is for composite methods in an HTN, not really using it here yet
-;;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defun structure-attack-plan (top-level)
-  (labels ((make-goal (goal-element &optional parent)
-	     (let ((goal-statement (getf goal-element :goal))
-		   (sub-plan (getf goal-element :plan)))
-	       ;; (format t "~%Working on goal ~a" goal-statement)
-	       (destructuring-bind (goal-name . arguments) goal-statement
-		 (let* ((goal-object (make-instance 'goal :goal-name goal-name :arguments arguments :parent parent))
-			(plan-object (make-plan sub-plan goal-object)))
-		   (setf (plan goal-object) plan-object)
-		   goal-object))))
-	   (make-plan (plan-element parent)
-	     (let ((connective (first plan-element))
-		   (steps (rest plan-element)))
-	       ;; (format t "~%For goal ~a with connective ~a there are ~a steps" parent connective (length steps))
-	       (let* ((plan-object (make-instance 'plan
-				  :connective connective
-				  :parent parent))
-		      (the-steps (loop for step in steps
-				     for type = (first step)
-				     for step-object = (case type
-							 (:goal (make-goal step plan-object))
-							 (:action (make-action step plan-object)))
-				     ;; do (format t "~%For type ~a step ~a" type step-object)
-				     collect step-object)))
-		 ;; (format t "~%Steps for plan ~a ~{~a~^, ~}" plan-object the-steps)
-		 (setf (steps plan-object) the-steps)
-		 plan-object)))
-	   (make-action (step parent)
-	     (destructuring-bind (head list-version actual-action) step
-	       (declare (ignore head list-version))
-	       (setf (parent actual-action) parent)
-	       actual-action)))
-    (make-goal top-level)))
-
-(defun attach-logic-variable-to-predication-maker (predication-maker logic-variable-maker)
-  (let ((new-statement (append (predication-maker-statement predication-maker)
-			       (list logic-variable-maker))))
-    `(predication-maker ',new-statement)))
-
-(defun rebuild-plan-structure (plan-structure &optional (input-state `(logic-variable-maker .(intern (string-upcase "?input-state"))))
-							(output-state `(logic-variable-maker ,(intern (string-upcase "?output-state")))))
-  ;; as we traverse the plan-structure tree we accumulate the list structure
-  ;; of the plan and push
-  ;; each this returns 3 values.  I'm not sure why the third yet
-  (labels ((do-next-level (structure connective input-state output-state)
-	     ;; each level should either be a :sequential/:parallel
-	     ;;  or a :goal/:plan pair
-	     ;;  or maybe a :action item (to be dealth with later)
-             (destructuring-bind (key . stuff) structure
-               (case key
-                 (:sequential
-                  (loop for (thing . more-to-come) on stuff
-		      for last = (not more-to-come)
-		      for next-input-state = input-state then his-output-state
-		      for next-output-state = (when last output-state)
-		      for his-result = (do-next-level thing key next-input-state next-output-state)
-                      for (his-stuff his-plan-structure his-output-state) = his-result
-                      append his-stuff into stuff
-		      when his-plan-structure  ;; a note provides no plan structure
-                      collect his-plan-structure into plan-structure
-                      finally (let* ((is-singleton? (null (rest plan-structure)))
-				     (final-key (if is-singleton? :singleton key)))
-				(return (list stuff `(list ,final-key ,@plan-structure) his-output-state)))))
-		 (:parallel
-                  (loop for thing in stuff
-		      for (his-stuff his-plan-structure) = (do-next-level thing key input-state output-state)
-		      append his-stuff into stuff
-		      when his-plan-structure ;; a note provides no plan structure
-		      collect his-plan-structure into plan-structure
-		      finally (return (list stuff `(list ,key ,@plan-structure) nil))))
-		 (:bind
-		  (let* ((the-binding (first stuff))
-			 (input-state (or (getf structure :input-state)
-					  input-state
-					  (ji:make-logic-variable-maker (intern (string-upcase "?input-state")))))
-			 (rebuilt-statement`(predication-maker '(in-state ,the-binding ,input-state))))
-		    (list (list rebuilt-statement)
-			  nil
-			  input-state)))
-		 (:note
-		  (let* ((the-note (first stuff))
-			 (input-state (or (getf structure :input-state)
-					  input-state
-					  (ji:make-logic-variable-maker (intern (string-upcase "?input-state")))))
-			 (intermediate-state (or (getf structure :output-state)
-						 output-state
-						 (ji:make-logic-variable-maker (intern (string-upcase (gentemp "?intermediate-state-"))))))
-			 (statement the-note)
-			 (rebuilt-statement `(prog1 t (let ((new-state (intern-state (intern (string-upcase (gentemp "intermediate-state-"))) ,input-state)))
-							(setf (intermediate-state? new-state) t)
-							(unify ,intermediate-state new-state)
-							(tell (predication-maker '(in-state ,statement ,intermediate-state)))))))
-		    (list (list rebuilt-statement)
-			  nil
-			  intermediate-state)))
-		 (:break (list (list `(prog1 t (break ,@stuff)))
-			       nil
-			       input-state))
-                 ((:goal :plan)
-                  (let* ((goal (getf structure :goal))
-                         (plan (getf structure :plan (ji::make-logic-variable-maker (gentemp (string-upcase "?plan-") ))))
-			 (input-state (or (getf structure :input-state)
-					  input-state
-					  (ji:make-logic-variable-maker (intern (string-upcase "?input-state")))))
-			 (output-state (or (getf structure :output-state)
-					   output-state
-					   (ji:make-logic-variable-maker (intern (string-upcase (gentemp "?intermediate-state-"))))))
-                         (rebuilt-statement `(predication-maker '(achieve-goal ,goal ,input-state ,output-state ,plan))))
-                    (list (list rebuilt-statement)
-                          (if (null connective)
-                              `(list :singleton
-                                     (list :goal ,(fixup-syntax (predication-maker-statement goal))
-                                           :plan ,plan))
-                            `(list :goal ,(fixup-syntax (predication-maker-statement goal))
-                                   :plan ,plan))
-			  output-state)))
-                 ((:action :repeated-action)
-		  (let* ((statement (first stuff))
-			 (input-state (or (getf structure :input-state)
-					  input-state
-					  (ji::make-logic-variable-maker (intern (string-upcase "?input-state")))))
-			 (output-state (or (getf structure :output-state)
-					   output-state
-					   (ji:make-logic-variable-maker (intern (string-upcase (gentemp "?intermediate-state-"))))))
-			 (action-variable (ji:make-logic-variable-maker (intern (string-upcase (gentemp "?action-")))))
-			 (rebuilt-statement `(predication-maker '(take-action ,statement ,input-state ,output-state ,action-variable)))
-			 )
-		    ;; (break "Action ~a ~a ~a ~a" statement input-state output-state rebuilt-statement)
-		    (list
-		     ;; The action requires no further sub-goaling
-		     (list rebuilt-statement)
-		   ;;; rebuilt action statement
-		     (if (null connective)
-			 `(list :singleton
-				(list ,key ,(fixup-syntax (predication-maker-statement (first stuff))) ,action-variable))
-		       `(list ,key ,(fixup-syntax (predication-maker-statement (first stuff))) ,action-variable))
-		     output-state))))))
-           (fixup-syntax (predication-maker-statement)
-             `(list
-               ,@(loop for thing in predication-maker-statement
-                     collect (typecase thing
-                               (logic-variable-maker thing)
-                               (symbol `',thing)
-                               (list (fixup-syntax thing)))))))
-    (when plan-structure
-      (do-next-level plan-structure nil input-state output-state))))
-
-
-(defparameter *all-attack-methods* nil)
-
-(defmacro define-method (method-name &key to-achieve
-					     (input-state `(logic-variable-maker ,(intern (string-upcase "?input-state"))))
-					     (output-state `(logic-variable-maker ,(intern (string-upcase "?output-state"))))
-					     guards
-					     bindings
-					     prerequisites
-					     typing
-					     plan
-					     post-conditions
-					     )
-  (let* ((plan-variable `(logic-variable-maker ,(gensym "?PLAN")))
-         (real-head `(predication-maker '(achieve-goal ,to-achieve ,input-state  ,output-state ,plan-variable)))
-	 (rebuilt-plan-structure (rebuild-plan-structure plan input-state output-state)))
-    (destructuring-bind (stuff plan-structure thing) (or rebuilt-plan-structure (list nil nil nil))
-      (declare (ignore thing))
-      `(eval-when (:load-toplevel :execute)
-         (pushnew ',method-name *all-attack-methods*)
-         (defrule ,method-name (:backward)
-         then ,real-head
-         if [and
-	     ,@(process-bindings bindings input-state)
-	     ,@(process-guards guards input-state)
-	     ,@(process-typing typing input-state)
-	     ,@(process-prerequisites prerequisites input-state)
-	     ,@stuff
-	     ,@(process-post-conditions post-conditions output-state)
-	     ,@(when (null rebuilt-plan-structure)
-	       `((unify ,input-state ,output-state)))
-	     (unify ,plan-variable ,plan-structure)
-	     ])))))
