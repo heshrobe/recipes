@@ -36,25 +36,55 @@
              :test #'string-equal))
   )
 
+
+
+
 #+allegro
 (defsystem recipes
     (:default-pathname "recipes:code;"
         :default-module-class separate-destination-module)
   (:serial
    ("package-definition")
-   ("basic-definitions" (:module-class separate-destination-joshua-module))
-   ("stateful-predicates" (:module-class separate-destination-joshua-module))
-   ("define-action" (:module-class separate-destination-joshua-module))
-   ("define-object" (:module-class separate-destination-joshua-module))
-   ("predicate-definitions" (:module-class separate-destination-joshua-module))))
-
-
-(Defsystem recipes
-    (:default-pathname "recipes:code;"
-        :default-module-class separate-destination-module)
-  (:serial
-   ("object-definitions" (:module-class separate-destination-joshua-module))
-   ("actions" (:module-class separate-destination-joshua-module))
+   ("predicate-definitions" (:module-class separate-destination-joshua-module))
+   ("read-gary-dump" (:module-class separate-destination-joshua-module))
+   ("read-gary-ontoloty" (:module-class separate-destination-joshua-module))
    ("output-dumper" (:module-class separate-destination-joshua-module))
-   ("parse-recipe" (:module-class separate-destination-joshua-module))
    ))
+
+
+#|
+
+;;; note: there are several files in this directory
+;;; that were used in a standalone version that took
+;;; START texps and then executed (like the guide system for ASIST does)
+;;; In this project, we get Gary's IMPACT representation which was derived
+;;; from the START parse.  I've removed those files from the defsystem
+;;; but left then in the git repo.
+
+
+Here's the mapping from files to their status
+
+In the current system:
+
+package-definition.lisp
+predicate-definitions.lisp
+read-gary-dump.lisp
+read-json-ontology.lisp
+output-dumper.lisp
+
+Examples of processing Gary's output:
+
+gary-ontology.lisp
+expansion-example.lisp
+
+Used in the standalone version:
+
+parse-recipe.lisp
+object-definitions.lisp
+
+Supplanted by the planning-core system:
+stateful-predicates.lisp
+
+
+
+|#

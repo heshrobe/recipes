@@ -38,31 +38,15 @@
   )
 
 #+asdf
-(asdf:defsystem recipes/core
-  :name "recipes-core"
+(asdf:defsystem recipes
+  :name "recipes"
   :description "Recipe Follower Functionality"
   :maintainer "Howie Shrobe"
   :pathname "."
   :serial t
   :components ((:file "package-definition")
                (:joshua-file "basic-definitions" )
-               (:joshua-file "stateful-predicates") 
                (:joshua-file "predicate-definitions")
-               (:joshua-file "define-action" )
-               (:joshua-file "define-object" )
-               ))
-
-
-#+asdf
-(asdf:defsystem recipes 
-  :name "recipes"
-  :description "Stuff specific to interpreting cooking recipes"
-  :maintainer "Howie Shrobe"
-  :pathname "."
-  :depends-on (recipes/core)
-  :serial t
-  :components ((:joshua-file "object-definitions")
-               (:joshua-file "actions" :depends-on (object-definitions))
+               (:joshua-file "read-gary-dump")
                (:joshua-file "output-dumper" :depends-on ("actions"))
-               (:joshua-file "parse-recipe" :depends-on ("output-dumper"))
                ))

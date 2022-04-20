@@ -2,23 +2,47 @@
 
 (in-package :recipes)
 
-(define-recipe-predicate named-component (superpart-object name subpart-object)
-   (ji::named-part-of-mixin))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;; This system is based on Joshua and the planning-core extension.
+;;;
+;;; Use of Joshua's object model:
+;;; We use the Joshua object model, with the predicates object-type-of and value-of
+;;; Value-of is a predicate that is temporally qualified (i.e. [in-state [value-of ... ]])
+;;; But object-type-of isn't.
+;;; We don't use the joshus object-model part-of and named-part-of because the planning-core
+;;; extension doesn't support making those temporally qualified.  So we just have a vanilla
+;;; part of predicate.
+;;; object-type-of isn't termporally quafilied which means that an object can't change it's type.
+;;; instead we have a 1-place predicate exists that is temporally qualified.
+;;; When a new object is created. the assert that it didn't exist in the initial state and that
+;;; it exists in the object state of the action that created it.  (This will require a small modification
+;;; to define-aciton in planning-core).
+;;; If an object is transformed (e.g. eggs are sliced) we assert that the original object (the eggs) no longer exists
+;;; and that the transformed object is newly created (the slices) and that it is derived from the original
+;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;;; (define-recipe-predicate component (superpart-object subpart-object) (ji::part-of-mixin))
 
-(define-recipe-predicate value-of (path variable) (ji::slot-value-mixin))
+(define-planning-predicate named-part-of (superpart-object name subpart-object) ())
+
+(define-planning-predicate part-of (superpart-object subpart-object) ())
+
+(define-planning-predicate component (superpart-object subpart-object) ())
+
+(define-planning-predicate product-of (source result) ())
 
 ;;; This is only used in fward-stateful-rule patterns to indicate that the value-of isn't stateful.
-(define-recipe-predicate value-of-ns (path variable) (non-stateful-predicate-model ji::slot-value-mixin))
+;;; (define-recipe-predicate value-of-ns (path variable) (non-stateful-predicate-model ji::slot-value-mixin))
 
-(define-recipe-predicate object-type-of (thing type) (non-stateful-predicate-model type-of-mixin))
+;;; We do use object-type-of from Joshua and its inheritance mechanisms
+;;; so this code isn't needed.  I'm just not quite ready to remove it from the
+;;;
 
-;;; For the recipe system we don't use the object-model from Joshua
+#|
 
 (define-recipe-predicate instance-of (thing type) ())
 (define-recipe-predicate subtype (type1 type2) (non-stateful-predicate-model))
-
 
 (defun find-all-supers (type)
   (let ((all-supers nil))
@@ -100,38 +124,38 @@
                        :do-backward-rules  nil))]
   )
 
-(define-recipe-predicate part-of (component container) ())
+|#
 
 
 
 
-(define-recipe-predicate contains (container contents) ())
+(define-planning-predicate contains (container contents) ())
 
-(define-recipe-predicate above (thing container) ())
+(define-planning-predicate above (thing container) ())
 
-(define-recipe-predicate in (thing container) ())
+(define-planning-predicate in (thing container) ())
 
-(define-recipe-predicate has (actor object) ())
+(define-planning-predicate has (actor object) ())
 
-(define-recipe-predicate broken (thing) ())
+(define-planning-predicate broken (thing) ())
 
-(define-recipe-predicate ingredient-of (recipe thing) ())
+(define-planning-predicate ingredient-of (recipe thing) ())
 
-(define-recipe-predicate utensil-of (recipe thing) ())
+(define-planning-predicate utensil-of (recipe thing) ())
 
-(define-recipe-predicate appliance-of (recipe thing) ())
+(define-planning-predicate appliance-of (recipe thing) ())
 
-(define-recipe-predicate cook-of (recipe cook) ())
+(define-planning-predicate cook-of (recipe cook) ())
 
-(define-recipe-predicate constituent-of (thing mixture) ())
+(define-planning-predicate constituent-of (thing mixture) ())
 
-(define-recipe-predicate state-of (thing its-state) ())
+(define-planning-predicate state-of (thing its-state) ())
 
-(define-recipe-predicate is-folded (thing) ())
+(define-planning-predicate is-folded (thing) ())
 
-(define-recipe-predicate is-flexible (thing) ())
+(define-planning-predicate is-flexible (thing) ())
 
-(define-recipe-predicate holding (actor object) ())
-(define-recipe-predicate handempty (actor) ())
+(define-planning-predicate holding (actor object) ())
+(define-planning-predicate handempty (actor) ())
 
-(define-recipe-predicate is-prepared (thing type) ())
+(define-planning-predicate is-prepared (thing type) ())
